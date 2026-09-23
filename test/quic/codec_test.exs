@@ -57,4 +57,36 @@ defmodule QUIC.CodecTest do
     assert {:ok, 0xFF} = QUIC.Codec.reconstruct_packet_number(0xFF, 0x100, 1)
     assert {:error, :invalid_packet_number} = QUIC.Codec.reconstruct_packet_number(256, 0, 1)
   end
+
+  test "encodes and decodes ACK ranges with independent wire bytes" do
+    frame = %{type: :ack, largest: 10, delay: 1, ranges: [{8, 10}, {4, 5}]}
+    expected = <<2, 10, 1, 1, 2, 1, 1>>
+
+    assert {:ok, ^expected} = QUIC.Codec.encode_frames([frame])
+    assert {:ok, [^frame], <<>>} = QUIC.Codec.decode_frames(expected)
+    assert {:error, :malformed_ack_frame} = QUIC.Codec.decode_frames(<<2, 10, 1, 1, 2, 1>>)
+
+    assert {:error, :invalid_ack_ranges} =
+             QUIC.Codec.encode_frames([%{frame | ranges: [{8, 10}, {7, 7}]}])
+  end
+
+  test "encodes and decodes close and handshake control frames" do
+    frames = [
+      %{type: :connection_close, error_code: 16, frame_type: 6, reason: "bad"},
+      %{type: :application_close, error_code: 42, reason: "done"},
+      %{type: :handshake_done}
+    ]
+
+    expected = <<0x1C, 16, 6, 3, "bad", 0x1D, 42, 4, "done", 0x1E>>
+    assert {:ok, ^expected} = QUIC.Codec.encode_frames(frames)
+    assert {:ok, ^frames, <<>>} = QUIC.Codec.decode_frames(expected)
+    assert {:error, :malformed_connection_close} = QUIC.Codec.decode_frames(<<0x1D, 42, 4, "do">>)
+
+    long_reason = :binary.copy(<<0>>, 1025)
+
+    assert {:error, :reason_too_large} =
+             QUIC.Codec.encode_frames([
+               %{type: :application_close, error_code: 1, reason: long_reason}
+             ])
+  end
 end

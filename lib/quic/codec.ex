@@ -165,14 +165,48 @@ defmodule QUIC.Codec do
     end
   end
 
-  defp encode_frames([%{type: :ack, largest: largest, delay: delay, ranges: ranges} | rest], acc)
+  defp encode_frames(
+         [%{type: :ack, largest: largest, delay: delay, ranges: ranges} = frame | rest],
+         acc
+       )
        when is_integer(largest) and is_integer(delay) and is_list(ranges) do
     with {:ok, a} <- encode_varint(largest),
          {:ok, d} <- encode_varint(delay),
-         {:ok, encoded} <- encode_ack_ranges(ranges) do
-      encode_frames(rest, [encoded, d, a, <<2>> | acc])
+         {:ok, encoded} <- encode_ack_ranges(largest, ranges) do
+      case encode_ecn(frame[:ecn]) do
+        {:ok, ecn, type} -> encode_frames(rest, [ecn, encoded, d, a, <<type>> | acc])
+        {:error, _} = error -> error
+      end
     end
   end
+
+  defp encode_frames(
+         [
+           %{type: :connection_close, error_code: code, frame_type: frame_type, reason: reason}
+           | rest
+         ],
+         acc
+       )
+       when is_integer(code) and is_integer(frame_type) and is_binary(reason) do
+    with :ok <- bounded_reason_length(byte_size(reason)),
+         {:ok, c} <- encode_varint(code),
+         {:ok, f} <- encode_varint(frame_type),
+         {:ok, l} <- encode_varint(byte_size(reason)) do
+      encode_frames(rest, [reason, l, f, c, <<0x1C>> | acc])
+    end
+  end
+
+  defp encode_frames([%{type: :application_close, error_code: code, reason: reason} | rest], acc)
+       when is_integer(code) and is_binary(reason) do
+    with :ok <- bounded_reason_length(byte_size(reason)),
+         {:ok, c} <- encode_varint(code),
+         {:ok, l} <- encode_varint(byte_size(reason)) do
+      encode_frames(rest, [reason, l, c, <<0x1D>> | acc])
+    end
+  end
+
+  defp encode_frames([%{type: :handshake_done} | rest], acc),
+    do: encode_frames(rest, [<<0x1E>> | acc])
 
   defp encode_frames([_ | _], _), do: {:error, :unsupported_frame}
 
@@ -190,6 +224,45 @@ defmodule QUIC.Codec do
   defp decode_frames(<<1, rest::binary>>, acc, limit),
     do: decode_frames(rest, [%{type: :ping} | acc], limit - 1)
 
+  defp decode_frames(<<2, rest::binary>>, acc, limit) do
+    with {:ok, largest, rest} <- decode_varint(rest),
+         {:ok, delay, rest} <- decode_varint(rest),
+         {:ok, count, rest} <- decode_varint(rest),
+         {:ok, first_range, rest} <- decode_varint(rest),
+         {:ok, ranges, tail} <- decode_ack_ranges(rest, largest, first_range, count) do
+      decode_frames(
+        tail,
+        [%{type: :ack, largest: largest, delay: delay, ranges: ranges} | acc],
+        limit - 1
+      )
+    else
+      _ -> {:error, :malformed_ack_frame}
+    end
+  end
+
+  defp decode_frames(<<3, rest::binary>>, acc, limit) do
+    with {:ok, largest, rest} <- decode_varint(rest),
+         {:ok, delay, rest} <- decode_varint(rest),
+         {:ok, count, rest} <- decode_varint(rest),
+         {:ok, first_range, rest} <- decode_varint(rest),
+         {:ok, ranges, rest} <- decode_ack_ranges(rest, largest, first_range, count),
+         {:ok, ect0, rest} <- decode_varint(rest),
+         {:ok, ect1, rest} <- decode_varint(rest),
+         {:ok, ce, tail} <- decode_varint(rest) do
+      frame = %{
+        type: :ack,
+        largest: largest,
+        delay: delay,
+        ranges: ranges,
+        ecn: %{ect0: ect0, ect1: ect1, ce: ce}
+      }
+
+      decode_frames(tail, [frame | acc], limit - 1)
+    else
+      _ -> {:error, :malformed_ack_frame}
+    end
+  end
+
   defp decode_frames(<<6, rest::binary>>, acc, limit) do
     with {:ok, offset, rest} <- decode_varint(rest),
          {:ok, length, rest} <- decode_varint(rest),
@@ -201,22 +274,134 @@ defmodule QUIC.Codec do
     end
   end
 
+  defp decode_frames(<<0x1C, rest::binary>>, acc, limit) do
+    with {:ok, code, rest} <- decode_varint(rest),
+         {:ok, frame_type, rest} <- decode_varint(rest),
+         {:ok, length, rest} <- decode_varint(rest),
+         :ok <- bounded_reason(length, rest),
+         <<reason::binary-size(^length), tail::binary>> <- rest do
+      frame = %{type: :connection_close, error_code: code, frame_type: frame_type, reason: reason}
+      decode_frames(tail, [frame | acc], limit - 1)
+    else
+      _ -> {:error, :malformed_connection_close}
+    end
+  end
+
+  defp decode_frames(<<0x1D, rest::binary>>, acc, limit) do
+    with {:ok, code, rest} <- decode_varint(rest),
+         {:ok, length, rest} <- decode_varint(rest),
+         :ok <- bounded_reason(length, rest),
+         <<reason::binary-size(^length), tail::binary>> <- rest do
+      decode_frames(
+        tail,
+        [%{type: :application_close, error_code: code, reason: reason} | acc],
+        limit - 1
+      )
+    else
+      _ -> {:error, :malformed_connection_close}
+    end
+  end
+
+  defp decode_frames(<<0x1E, rest::binary>>, acc, limit),
+    do: decode_frames(rest, [%{type: :handshake_done} | acc], limit - 1)
+
   defp decode_frames(<<type, _::binary>>, _acc, _limit) when type >= 0x08 and type <= 0x0F,
     do: {:error, :unsupported_frame}
 
   defp decode_frames(<<type, _::binary>>, _acc, _limit), do: {:error, {:unknown_frame, type}}
   defp decode_frames(_, _, _), do: {:error, :malformed_frame}
 
-  defp encode_ack_ranges([]), do: {:error, :invalid_ack_ranges}
-
-  defp encode_ack_ranges([{gap, range} | rest]) when gap >= 0 and range >= 0 do
-    with {:ok, g} <- encode_varint(gap),
-         {:ok, r} <- encode_varint(range),
-         {:ok, tail} <- encode_ack_ranges(rest),
-         do: {:ok, <<g::binary, r::binary, tail::binary>>}
+  defp encode_ack_ranges(largest, ranges) do
+    with {:ok, normalized} <- normalize_ack_ranges(largest, ranges),
+         [first | rest] <- normalized,
+         {:ok, first_range} <- encode_varint(elem(first, 1) - elem(first, 0)),
+         {:ok, range_count} <- encode_varint(length(rest)),
+         {:ok, pairs} <- encode_ack_pairs(rest, first) do
+      {:ok, <<range_count::binary, first_range::binary, pairs::binary>>}
+    else
+      _ -> {:error, :invalid_ack_ranges}
+    end
   end
 
-  defp encode_ack_ranges(_), do: {:error, :invalid_ack_ranges}
+  defp normalize_ack_ranges(largest, ranges) when is_integer(largest) and largest >= 0 do
+    if valid_ack_ranges?(ranges, largest), do: {:ok, ranges}, else: {:error, :invalid_ack_ranges}
+  end
+
+  defp normalize_ack_ranges(_, _), do: {:error, :invalid_ack_ranges}
+
+  defp valid_ack_ranges?([{smallest, high} | rest], largest)
+       when is_integer(smallest) and is_integer(high) and smallest >= 0 and high >= smallest and
+              high == largest,
+       do: valid_ack_tail?(rest, smallest)
+
+  defp valid_ack_ranges?(_, _), do: false
+
+  defp valid_ack_tail?([], _), do: true
+
+  defp valid_ack_tail?([{smallest, high} | rest], previous_low)
+       when is_integer(smallest) and is_integer(high) and smallest >= 0 and high >= smallest and
+              high <= previous_low - 2,
+       do: valid_ack_tail?(rest, smallest)
+
+  defp valid_ack_tail?(_, _), do: false
+
+  defp encode_ack_pairs([], _), do: {:ok, <<>>}
+
+  defp encode_ack_pairs([{smallest, high} | rest], {previous_low, _}) do
+    gap = previous_low - high - 2
+
+    with true <- gap >= 0,
+         {:ok, g} <- encode_varint(gap),
+         {:ok, r} <- encode_varint(high - smallest),
+         {:ok, tail} <- encode_ack_pairs(rest, {smallest, high}) do
+      {:ok, <<g::binary, r::binary, tail::binary>>}
+    else
+      _ -> {:error, :invalid_ack_ranges}
+    end
+  end
+
+  defp decode_ack_ranges(rest, largest, first_range, count) when count <= 64 do
+    first_low = largest - first_range
+
+    if first_low < 0 do
+      {:error, :invalid_ack_ranges}
+    else
+      decode_ack_pairs(rest, [{first_low, largest}], first_low, count)
+    end
+  end
+
+  defp decode_ack_ranges(_, _, _, _), do: {:error, :ack_range_limit}
+
+  defp decode_ack_pairs(rest, ranges, _previous_low, 0), do: {:ok, Enum.reverse(ranges), rest}
+
+  defp decode_ack_pairs(rest, ranges, previous_low, count) do
+    with {:ok, gap, rest} <- decode_varint(rest),
+         {:ok, range, rest} <- decode_varint(rest),
+         high when high >= 0 <- previous_low - gap - 2,
+         low when low >= 0 <- high - range do
+      decode_ack_pairs(rest, [{low, high} | ranges], low, count - 1)
+    else
+      _ -> {:error, :invalid_ack_ranges}
+    end
+  end
+
+  defp encode_ecn(nil), do: {:ok, <<>>, 2}
+
+  defp encode_ecn(%{ect0: ect0, ect1: ect1, ce: ce}) do
+    with {:ok, a} <- encode_varint(ect0),
+         {:ok, b} <- encode_varint(ect1),
+         {:ok, c} <- encode_varint(ce) do
+      {:ok, a <> b <> c, 3}
+    end
+  end
+
+  defp encode_ecn(_), do: {:error, :invalid_ecn_counts}
+
+  defp bounded_reason(length, rest) when length <= 1024 and byte_size(rest) >= length, do: :ok
+  defp bounded_reason(_, _), do: {:error, :reason_too_large}
+
+  defp bounded_reason_length(length) when is_integer(length) and length <= 1024, do: :ok
+  defp bounded_reason_length(_), do: {:error, :reason_too_large}
 
   defp take_cid(<<len, rest::binary>>) when len <= 20 and byte_size(rest) >= len,
     do: {:ok, binary_part(rest, 0, len), binary_part(rest, len, byte_size(rest) - len)}
