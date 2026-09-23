@@ -1,0 +1,3 @@
+%{
+  "ex_ssl": {:git, "https://github.com/gsmlg-dev/ex_ssl.git", "02eb981f59d4e182d4473e264a9f8b093ec6bf3d", [ref: "02eb981f59d4e182d4473e264a9f8b093ec6bf3d"]},
+}

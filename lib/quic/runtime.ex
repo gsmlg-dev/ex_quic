@@ -1,0 +1,64 @@
+defmodule QUIC.Runtime do
+  @moduledoc """
+  Small data contracts separating pure transitions from runtime IO.
+  """
+
+  defmodule Datagram do
+    @enforce_keys [:bytes, :remote, :received_at, :generation]
+    defstruct [:bytes, :remote, :local, :received_at, :generation]
+
+    @type t :: %__MODULE__{
+            bytes: binary(),
+            remote: term(),
+            local: term() | nil,
+            received_at: integer(),
+            generation: non_neg_integer()
+          }
+  end
+
+  defmodule Generation do
+    @enforce_keys [:value]
+    defstruct [:value]
+    @type t :: %__MODULE__{value: non_neg_integer()}
+  end
+
+  defmodule SendReceipt do
+    @enforce_keys [:ref, :generation, :status]
+    defstruct [:ref, :generation, :status, :completed_at, :error]
+    @type status :: :queued | :sent | :failed | :stale
+  end
+
+  defmodule TimerToken do
+    @enforce_keys [:ref, :generation, :deadline]
+    defstruct [:ref, :generation, :deadline]
+  end
+
+  defmodule ConnectionHandle do
+    @enforce_keys [:id, :generation]
+    defstruct [:id, :generation]
+  end
+
+  defmodule StreamHandle do
+    @enforce_keys [:connection, :id]
+    defstruct [:connection, :id]
+  end
+
+  defmodule VirtualClock do
+    @moduledoc """
+    Deterministic monotonic clock for pure engine tests.
+    """
+    def new(now \\ 0), do: %{now: now}
+    def now(%{now: now}), do: now
+
+    def advance(clock, delta) when is_integer(delta) and delta >= 0,
+      do: %{clock | now: clock.now + delta}
+  end
+
+  defmodule IO do
+    @moduledoc """
+    Behaviour for externally owned sockets and deterministic tests.
+    """
+    @callback send(term(), binary(), term()) :: {:ok, reference()} | {:error, term()}
+    @callback monotonic_time() :: integer()
+  end
+end
