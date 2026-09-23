@@ -161,7 +161,7 @@ defmodule QUIC.Codec do
   defp encode_frames([%{type: :crypto, offset: offset, data: data} | rest], acc)
        when is_integer(offset) and offset >= 0 and is_binary(data) do
     with {:ok, o} <- encode_varint(offset), {:ok, l} <- encode_varint(byte_size(data)) do
-      encode_frames(rest, [<<6>>, o, l, data | acc])
+      encode_frames(rest, [data, l, o, <<6>> | acc])
     end
   end
 
@@ -170,7 +170,7 @@ defmodule QUIC.Codec do
     with {:ok, a} <- encode_varint(largest),
          {:ok, d} <- encode_varint(delay),
          {:ok, encoded} <- encode_ack_ranges(ranges) do
-      encode_frames(rest, [<<2>>, a, d, encoded | acc])
+      encode_frames(rest, [encoded, d, a, <<2>> | acc])
     end
   end
 
@@ -184,6 +184,8 @@ defmodule QUIC.Codec do
 
   defp decode_frames(_rest, _acc, 0), do: {:error, :frame_limit}
   defp decode_frames(<<>>, acc, _), do: {:ok, Enum.reverse(acc), <<>>}
+
+  defp decode_frames(<<0, rest::binary>>, acc, limit), do: decode_frames(rest, acc, limit)
 
   defp decode_frames(<<1, rest::binary>>, acc, limit),
     do: decode_frames(rest, [%{type: :ping} | acc], limit - 1)

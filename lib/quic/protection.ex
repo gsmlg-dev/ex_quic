@@ -82,6 +82,48 @@ defmodule QUIC.Protection do
 
   def header_protection_mask(_, _, _), do: {:error, :short_sample}
 
+  @doc "Removes QUIC header protection from a packet prefix and packet number bytes."
+  @spec remove_header_protection(
+          binary(),
+          non_neg_integer(),
+          binary(),
+          :aes_128_gcm | :chacha20_poly1305
+        ) ::
+          {:ok, binary(), non_neg_integer()} | {:error, atom()}
+  def remove_header_protection(packet, pn_offset, hp, algorithm)
+      when is_binary(packet) and is_integer(pn_offset) and pn_offset >= 1 and is_binary(hp) do
+    if byte_size(packet) < pn_offset + 4 + 16 do
+      {:error, :short_sample}
+    else
+      sample = binary_part(packet, pn_offset + 4, 16)
+      header_rest_size = pn_offset - 1
+
+      with {:ok, mask} <- header_protection_mask(hp, sample, algorithm),
+           <<first, header_rest::binary-size(^header_rest_size), rest::binary>> <- packet do
+        mask_first = :binary.decode_unsigned(binary_part(mask, 0, 1))
+        first = bxor(first, mask_first &&& 0x0F)
+        pn_len = (first &&& 3) + 1
+
+        if byte_size(rest) < pn_len do
+          {:error, :truncated_packet_number}
+        else
+          <<pn::binary-size(^pn_len), tail::binary>> = rest
+
+          unmasked =
+            for {byte, index} <- Enum.with_index(:binary.bin_to_list(pn)), into: <<>> do
+              <<bxor(byte, :binary.at(mask, index + 1))>>
+            end
+
+          {:ok, <<first, header_rest::binary, unmasked::binary, tail::binary>>, pn_len}
+        end
+      else
+        _ -> {:error, :malformed_header}
+      end
+    end
+  end
+
+  def remove_header_protection(_, _, _, _), do: {:error, :invalid_header_protection_input}
+
   @spec retry_tag(binary(), binary()) :: {:ok, binary()} | {:error, atom()}
   def retry_tag(original_dcid, retry_packet)
       when is_binary(original_dcid) and is_binary(retry_packet) and byte_size(original_dcid) <= 20 do
