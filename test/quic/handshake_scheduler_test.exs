@@ -109,6 +109,20 @@ defmodule QUIC.HandshakeSchedulerTest do
     def feed(state, _level, _bytes), do: {:ok, state, []}
   end
 
+  defmodule EmitThenInvalidParameters do
+    def new(_, _), do: {:ok, :initial, []}
+    def info(phase), do: %{receive_level: phase}
+    def abort(state, _), do: state
+
+    def feed(_, :initial, _),
+      do:
+        {:ok, :application,
+         [
+           {:emit, :handshake, <<7, 8, 9>>},
+           {:peer_transport_parameters, <<3, 2, 0x44, 0xAF, 15, 4, 1, 2, 3, 4>>, :authenticated}
+         ]}
+  end
+
   defp new(opts \\ []) do
     HandshakeScheduler.new(
       :client,
@@ -196,6 +210,16 @@ defmodule QUIC.HandshakeSchedulerTest do
            |> Enum.all?(fn [{offset, length}, {next, _}] -> offset + length == next end)
 
     assert Enum.reduce(ranges, 0, fn {_offset, length}, total -> total + length end) == 4000
+  end
+
+  test "rejects invalid authenticated parameters before committing same-batch emissions" do
+    {:ok, state, []} = new_with(EmitThenInvalidParameters)
+    state = %{state | peer_initial_scid: <<5, 6, 7, 8>>}
+
+    assert {:error, {:transport_parameters, :invalid_max_udp_payload_size}, next, []} =
+             HandshakeScheduler.feed(state, :initial, 0, <<1>>)
+
+    assert next.pending == []
   end
 
   test "installs directional QUIC keys from recorded TLS secrets" do

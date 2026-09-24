@@ -532,47 +532,63 @@ defmodule QUIC.HandshakeScheduler do
   end
 
   defp ingest_tls_effects(state, effects) when is_list(effects) do
-    Enum.reduce_while(effects, {:ok, state, []}, fn
-      {:emit, level, bytes}, {:ok, state, generated} when level in @levels and is_binary(bytes) ->
-        offset = emitted_offset(state, level, bytes)
-        emission = %{level: level, offset: offset, bytes: bytes}
-        {:cont, {:ok, %{state | pending: state.pending ++ [emission]}, generated}}
+    with :ok <- preflight_authenticated_parameters(state, effects) do
+      Enum.reduce_while(effects, {:ok, state, []}, fn
+        {:emit, level, bytes}, {:ok, state, generated}
+        when level in @levels and is_binary(bytes) ->
+          offset = emitted_offset(state, level, bytes)
+          emission = %{level: level, offset: offset, bytes: bytes}
+          {:cont, {:ok, %{state | pending: state.pending ++ [emission]}, generated}}
 
-      {%SSL.QUIC.Secret{}, _}, acc ->
-        {:cont, acc}
+        {%SSL.QUIC.Secret{}, _}, acc ->
+          {:cont, acc}
 
-      %SSL.QUIC.Secret{} = secret, {:ok, state, generated} ->
-        case install_secret(state, secret) do
-          {:ok, state} -> {:cont, {:ok, state, generated}}
-          {:error, reason} -> {:halt, {:error, reason, state}}
-        end
+        %SSL.QUIC.Secret{} = secret, {:ok, state, generated} ->
+          case install_secret(state, secret) do
+            {:ok, state} -> {:cont, {:ok, state, generated}}
+            {:error, reason} -> {:halt, {:error, reason, state}}
+          end
 
-      {:handshake_complete, _}, acc ->
-        {:cont, acc}
+        {:handshake_complete, _}, acc ->
+          {:cont, acc}
 
-      :handshake_complete, acc ->
-        {:cont, acc}
+        :handshake_complete, acc ->
+          {:cont, acc}
 
-      {:peer_authenticated, _}, acc ->
-        {:cont, acc}
+        {:peer_authenticated, _}, acc ->
+          {:cont, acc}
 
-      {:peer_transport_parameters, bytes, :authenticated}, {:ok, state, generated} ->
+        {:peer_transport_parameters, bytes, :authenticated}, {:ok, state, generated} ->
+          case validate_peer_transport_parameters(state, bytes) do
+            :ok -> {:cont, {:ok, state, generated}}
+            {:error, reason} -> {:halt, {:error, {:transport_parameters, reason}, state}}
+          end
+
+        {:peer_transport_parameters, _, _}, acc ->
+          {:cont, acc}
+
+        {:negotiated_alpn, _}, acc ->
+          {:cont, acc}
+
+        {:error, error}, _ ->
+          {:halt, {:error, error, state}}
+
+        _, _ ->
+          {:halt, {:error, :invalid_tls_action, state}}
+      end)
+    end
+  end
+
+  defp preflight_authenticated_parameters(state, effects) do
+    Enum.reduce_while(effects, :ok, fn
+      {:peer_transport_parameters, bytes, :authenticated}, :ok ->
         case validate_peer_transport_parameters(state, bytes) do
-          :ok -> {:cont, {:ok, state, generated}}
+          :ok -> {:cont, :ok}
           {:error, reason} -> {:halt, {:error, {:transport_parameters, reason}, state}}
         end
 
-      {:peer_transport_parameters, _, _}, acc ->
-        {:cont, acc}
-
-      {:negotiated_alpn, _}, acc ->
-        {:cont, acc}
-
-      {:error, error}, _ ->
-        {:halt, {:error, error, state}}
-
-      _, _ ->
-        {:halt, {:error, :invalid_tls_action, state}}
+      _, :ok ->
+        {:cont, :ok}
     end)
   end
 
