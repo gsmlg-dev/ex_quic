@@ -1,20 +1,23 @@
 defmodule QUIC.HandshakeSchedulerLevelsTest do
   use ExUnit.Case, async: true
 
-  alias QUIC.{HandshakeScheduler, Protection}
+  alias QUIC.HandshakeScheduler
+  import Bitwise
 
   defmodule Recorded do
     defstruct []
 
-    def new(_, _),
-      do:
-        {:ok, %__MODULE__{},
-         [
-           secret(:handshake, :read, <<1::256>>),
-           secret(:handshake, :write, <<2::256>>),
-           secret(:application, :read, <<3::256>>),
-           secret(:application, :write, <<4::256>>)
-         ]}
+    def new(role, _) do
+      {read, write} = if role == :client, do: {1, 2}, else: {2, 1}
+
+      {:ok, %__MODULE__{},
+       [
+         secret(:handshake, :read, <<read::256>>),
+         secret(:handshake, :write, <<write::256>>),
+         secret(:application, :read, <<read + 2::256>>),
+         secret(:application, :write, <<write + 2::256>>)
+       ]}
+    end
 
     def info(_), do: %{receive_level: :initial}
     def abort(state, _), do: state
@@ -32,6 +35,20 @@ defmodule QUIC.HandshakeSchedulerLevelsTest do
     end
   end
 
+  defmodule WireRecorded do
+    def new(role, opts) do
+      {:ok, _, secrets} = Recorded.new(role, opts)
+      emissions = if role == :client, do: [{:emit, :handshake, <<7, 8>>}], else: []
+      {:ok, %{received: []}, secrets ++ emissions}
+    end
+
+    def info(_), do: %{receive_level: :handshake}
+    def abort(state, _), do: state
+
+    def feed(state, :handshake, bytes),
+      do: {:ok, %{state | received: state.received ++ [bytes]}, []}
+  end
+
   defp new do
     HandshakeScheduler.new(
       :client,
@@ -42,18 +59,117 @@ defmodule QUIC.HandshakeSchedulerLevelsTest do
     )
   end
 
+  # Independent RFC 9001 packet oracle using only raw OTP primitives, not
+  # QUIC.Protection's header/nonce/AEAD implementations.
   defp decrypt_packet(packet, keys, pn_offset) do
-    assert {:ok, unprotected, pn_len} =
-             Protection.remove_header_protection(packet, pn_offset, keys.hp, keys.hp_algorithm)
+    sample = binary_part(packet, pn_offset + 4, 16)
+    <<mask, masks::binary>> = :crypto.crypto_one_time(:aes_128_ecb, keys.hp, sample, true)
+    <<protected_first, rest::binary>> = packet
+    low_bits = if band(protected_first, 0x80) == 0, do: 0x1F, else: 0x0F
+    first = bxor(protected_first, band(mask, low_bits))
+    pn_len = band(first, 3) + 1
 
-    <<_first, _prefix::binary-size(^pn_offset - 1), pn_bytes::binary-size(^pn_len),
-      ciphertext::binary>> =
-      unprotected
+    <<prefix::binary-size(^pn_offset - 1), protected_pn::binary-size(^pn_len),
+      ciphertext::binary>> = rest
 
+    pn_bytes = :crypto.exor(protected_pn, binary_part(masks, 0, pn_len))
     pn = :binary.decode_unsigned(pn_bytes)
-    aad = binary_part(unprotected, 0, pn_offset + pn_len)
-    assert {:ok, plaintext} = Protection.aead_decrypt(keys.key, keys.iv, pn, aad, ciphertext)
+    aad = <<first, prefix::binary, pn_bytes::binary>>
+    cipher_size = byte_size(ciphertext) - 16
+    <<encrypted::binary-size(^cipher_size), tag::binary-size(16)>> = ciphertext
+    nonce = :crypto.exor(keys.iv, <<pn::96>>)
+
+    plaintext =
+      :crypto.crypto_one_time_aead(:aes_128_gcm, keys.key, nonce, encrypted, aad, tag, false)
+
+    assert is_binary(plaintext)
     {pn, plaintext}
+  end
+
+  defp peer_handshake(keys, plaintext) do
+    # Packet number zero; one-byte packet number and bounded one-byte Length.
+    header = <<0xE0, 1::32, 4, 5, 6, 7, 8, 4, 1, 2, 3, 4, byte_size(plaintext) + 17>>
+    aad = header <> <<0>>
+
+    {encrypted, tag} =
+      :crypto.crypto_one_time_aead(:aes_128_gcm, keys.key, keys.iv, plaintext, aad, 16, true)
+
+    payload = encrypted <> tag
+
+    <<mask, pn_mask, _::binary>> =
+      :crypto.crypto_one_time(:aes_128_ecb, keys.hp, binary_part(payload, 3, 16), true)
+
+    <<first, rest::binary>> = header
+    <<bxor(first, band(mask, 0x0F)), rest::binary, pn_mask, payload::binary>>
+  end
+
+  test "recorded peer secrets install matching opposite directions at each level" do
+    {:ok, client, []} = new()
+
+    {:ok, server, []} =
+      HandshakeScheduler.new(:server, dcid: client.scid, scid: client.dcid, adapter: Recorded)
+
+    for level <- [:handshake, :application], {a, b} <- [{:read, :write}, {:write, :read}] do
+      assert Map.take(client.keys[level][a], [:key, :iv, :hp]) ==
+               Map.take(server.keys[level][b], [:key, :iv, :hp])
+
+      refute client.keys[level][a].key == server.keys[level][a].key
+    end
+  end
+
+  test "independently decrypted outbound Handshake replays and retransmits without another TLS feed" do
+    {:ok, sender, [first]} =
+      HandshakeScheduler.new(:client,
+        dcid: <<1, 2, 3, 4>>,
+        scid: <<5, 6, 7, 8>>,
+        adapter: WireRecorded
+      )
+
+    {:ok, receiver, []} =
+      HandshakeScheduler.new(:server, dcid: sender.scid, scid: sender.dcid, adapter: WireRecorded)
+
+    assert {0, <<6, 0, 2, 7, 8>>} = decrypt_packet(first.bytes, sender.keys.handshake.write, 16)
+    {:ok, receiver, _} = HandshakeScheduler.receive_datagram(receiver, first.bytes, 1)
+    {:ok, receiver, _} = HandshakeScheduler.receive_datagram(receiver, first.bytes, 2)
+    assert receiver.tls.tls.received == [<<7, 8>>]
+
+    {:ok, sender, [:sent]} = HandshakeScheduler.local_send(sender, :handshake, 0, :ok, 0)
+    original_tls = sender.tls
+    {:ok, sender, [retransmission]} = HandshakeScheduler.retry_crypto(sender, :handshake, 0)
+    assert sender.tls == original_tls
+    assert retransmission.packet_number == 1
+    {:ok, receiver, _} = HandshakeScheduler.receive_datagram(receiver, retransmission.bytes, 3)
+    assert receiver.tls.tls.received == [<<7, 8>>]
+  end
+
+  test "authenticated Handshake rejects HANDSHAKE_DONE at the wrong encryption level" do
+    {:ok, state, []} = new()
+    packet = peer_handshake(state.keys.handshake.read, <<0x1E, 0, 0>>)
+
+    assert {:error, {:wrong_encryption_level, :handshake_done, :handshake}, ^state} =
+             HandshakeScheduler.receive_datagram(state, packet, 10)
+  end
+
+  test "authenticated ACK cannot acknowledge a packet from a different number space" do
+    {:ok, state, []} = new()
+    state = %{state | pending: [%{level: :application, offset: 0, bytes: <<1>>}]}
+    {:ok, state, [_]} = HandshakeScheduler.schedule(state)
+    {:ok, state, [:sent]} = HandshakeScheduler.local_send(state, :application, 0, :ok, 1)
+    # ACK largest=0, delay=0, range-count=0, first-range=0, all one-byte varints.
+    packet = peer_handshake(state.keys.handshake.read, <<2, 0, 0, 0, 0>>)
+
+    assert {:error, {:invalid_ack, :ack_never_issued}, ^state} =
+             HandshakeScheduler.receive_datagram(state, packet, 10)
+
+    assert state.recovery.spaces.application.sent[0].status == :sent
+  end
+
+  test "authenticated Handshake padding and transport close decode independently" do
+    {:ok, state, []} = new()
+    packet = peer_handshake(state.keys.handshake.read, <<0, 0x1C, 0, 0, 0>>)
+
+    assert {:ok, _, [%{type: :connection_close, error_code: 0}]} =
+             HandshakeScheduler.receive_datagram(state, packet, 10)
   end
 
   test "builds Handshake CRYPTO with write keys and independent packet number" do

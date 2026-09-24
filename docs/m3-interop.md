@@ -1,13 +1,14 @@
-# M3-E independent peer evidence (partial)
+# M3-E independent peer evidence
 
 On 2026-09-24 both ordinary certificate-handshake directions passed against
 **aioquic 1.2.0**, using Python 3.12.12 and Elixir 1.20.1 / OTP 29. The ALPN is
 `ex-quic-test`. Certificate verification stays enabled with the disposable
 `example.test` CA/leaf fixtures from the pinned ex_ssl dependency.
 
-This is independent network handshake evidence for the two ordinary scenarios,
-not completion of M3-E or a general QUIC support/security claim. A subsequent
-client Retry scenario also passes as recorded below.
+The current requested M3-E matrix passes in both roles, including Retry, packet
+impairment and authentication negatives. See [acceptance mapping](m3-acceptance.md)
+for scope and remaining wider milestones. Increment records below preserve the
+validation order and earlier partial status; none is a general security claim.
 
 | Scenario | Result |
 | --- | --- |
@@ -61,8 +62,8 @@ harness, based on parent `f35c8883ce7c96a1507543624769700a6d1484c7`.
   The corrected primitive matches RFC 8439 section 2.3.2's fixed block prefix.
 
 Remaining protocol lifecycle and resource edge cases from `m3-runtime.md` are
-not waived by these two passing scenarios. M3-E remains open until its complete
-independent network matrix passes.
+not waived by these two passing scenarios. At that baseline increment, the remaining independent network matrix was open;
+subsequent records below supply its results.
 
 Local gates on the final baseline increment: `mix format --check-formatted`,
 `mix compile --warnings-as-errors`, `mix test` (97 tests, seed 531985), and
@@ -128,8 +129,8 @@ transport parameters remain separate from the Retry DCID used for Initial keys.
 Unit tests mutate every token byte and cover expiry, future time, key replacement,
 IPv4/IPv6, address/port/CID mismatch and bounded malformed inputs. UDP tests
 cover pre-validation allocation, rate limiting, cross-address replay rejection,
-duplicate routing and a real certificate handshake. Independent impairment and
-certificate/ALPN negative scenarios are still pending; M3-E remains incomplete.
+duplicate routing and a real certificate handshake. At that increment, independent impairment and certificate/ALPN negative
+scenarios remained pending; subsequent records below supply their results.
 
 Server Retry local gates: `mix format --check-formatted`,
 `mix compile --warnings-as-errors`, `mix test` (104 tests, seed 184043),
@@ -179,7 +180,8 @@ passed three tests using archived independent packet bytes. They verify actual
 loss/duplication/one-bit corruption, reversed delivery order and failure to report
 mere delay as successful reordering. These cases do not establish sustained-loss,
 all packet-direction combinations, congestion-load or production robustness.
-Independent certificate/ALPN negatives remain pending.
+Certificate/ALPN negatives were still pending at that increment; the next
+section records their results.
 
 Impairment increment local gates: formatting, warnings-as-errors compilation,
 104 ExUnit tests (seed 589848), and diff checks passed. All ten final network

@@ -47,11 +47,11 @@ independent QUIC interoperability. The test ALPN is `ex-quic-test`.
 
 ## Remaining acceptance work
 
-M3-E is not complete. This document records the earlier local-runtime increment.
-See [independent peer evidence](m3-interop.md) for subsequent ordinary dual-role
-aioquic results; the complete independent network matrix remains open. Retry/token handling, broader loss/reordering/
-duplication/corruption, external certificate/ALPN negatives and independently
-verified packet behavior remain to be exercised and corrected as needed.
+The requested M3-C through M3-E route now has [acceptance evidence](m3-acceptance.md).
+This document records the earlier local-runtime increment. The subsequent
+[independent peer matrix](m3-interop.md) covers both-role ordinary handshakes,
+Retry, deterministic loss/reordering/duplication/corruption and certificate/ALPN
+rejection. These bounded scenarios do not complete the wider M3/M6 lifecycle gates.
 
 Before broader endpoint acceptance, also review key retirement, strict packet
 header/CID and frame legality, large CRYPTO flight fragmentation, congestion-full
