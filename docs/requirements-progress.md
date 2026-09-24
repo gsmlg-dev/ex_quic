@@ -25,3 +25,5 @@ This record tracks incremental work against `docs/implement-plan.md`; intermedia
 | Initial inspector / fingerprint replay | pinned independent aioquic 1.2.0 Initial replay, duplicate suppression, incomplete completion, expiry/conflict checks and two-ClientHello ordinal lifecycle tests pass; independent HRR peer replay remains pending | M2 |
 
 The endpoint runtime supports the controlled independent network-handshake scenarios in [M3 acceptance](m3-acceptance.md), independent stream transfer, profile comparison, and the Abyss shared-socket run. M6 remains open for independent malformed authenticated packets, sustained large-flight loss/resource measurements, independent lifecycle validation, and an HRR-capable peer. See [runtime evidence and limits](m3-runtime.md).
+
+See the requirement-by-requirement [M6 audit](m6-audit.md) for exact commands and evidence boundaries.
