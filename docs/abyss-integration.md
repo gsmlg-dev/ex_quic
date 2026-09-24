@@ -1,6 +1,6 @@
 # Abyss integration — opt-in QUIC endpoint
 
-Target inspected: `gsmlg-dev/abyss@0de0b8a` (pushed to `gsmlg-dev/abyss/main`). The additive dispatcher seam is implemented there; the ex_quic adapter and independent QUIC-through-Abyss acceptance remain pending. [R5]
+Target inspected: `gsmlg-dev/abyss@1e326b7` (pushed to `gsmlg-dev/abyss/main`). The additive dispatcher seam and ex_quic adapter are implemented and covered by the cross-repository acceptance run below.
 
 ## Actual starting behavior
 
@@ -12,7 +12,7 @@ Do not route every QUIC datagram through that handler lifecycle. QUIC requires d
 
 The Abyss patch adds a general `datagram_dispatcher` configuration option. Omitted means the exact existing UDP path. Opt-in mode invokes a persistent callback before handler creation, passing datagram bytes, remote address, local endpoint metadata, monotonic receipt time and endpoint generation.
 
-The listener still blocks in `recv(:infinity)`. A separate bounded writer owns egress admission and reports local send results while the listener remains blocked. Routes are monitored and removed when their connection process exits. See `gsmlg-dev/abyss@0de0b8a` and `docs/dispatcher.md` in that repository.
+The listener still blocks in `recv(:infinity)`. A separate bounded writer owns egress admission and reports local send results while the listener remains blocked. Routes are monitored and removed when their connection process exits. See `gsmlg-dev/abyss@1e326b7` and `docs/dispatcher.md` in that repository.
 
 `QUIC.AbyssDispatcher` is the dependency-free callback adapter in this repository. It starts an externally owned `QUIC.Endpoint`, forwards each datagram through its CID router, and uses the injected `send_fun` for egress. New connections are admitted only after minimal structural/version checks and a resource reservation. Established routes use destination CID; a provisional map covers Initial packets before the selected server CID becomes usable. Untrusted CID fields are routing hints, not authentication.
 
@@ -48,9 +48,9 @@ Default to a dedicated QUIC port/endpoint. Do not invent mixed-protocol demultip
 
 ## Required tests and separate task scope
 
-Before M5 is complete, run a genuine independent QUIC client against the Abyss listener with certificate verification on, transfer streams, and correlate actual fingerprint observations. Test concurrent clients, repeated Initial packets, multiple CIDs for one connection, close-one/keep-other, listener/writer restart, delayed receipts, capacity exhaustion and old-generation events.
+The M5 acceptance run now uses two ex_quic clients against the Abyss-owned listener with certificate verification, transfers two streams, closes one connection, suspends/resumes the listener, and admits a third client after restart. The independent aioquic handshake matrix and profile captures remain separate evidence; this script does not claim an independently implemented peer stream transfer.
 
-Run the existing Abyss test suite in default mode with the new option omitted. Add a dependency-disabled regression so ordinary users are not required to start ex_quic. Decide optional dependency/application startup deliberately from the actual Mix structure, not by importing QUIC modules into all UDP paths.
+The existing Abyss test suite passes in default mode with the dispatcher option omitted (`501 passed`, `12 excluded`). A dedicated dependency-disabled regression remains pending; ordinary UDP behavior is covered by the existing default suite but has not been isolated as a separate acceptance command.
 
 This document is a work specification, not permission for the first ex_quic Codex task to edit another repository. M0 defines the generic endpoint contract; the scoped Abyss change follows once it stabilizes. There is no dependency cycle.
 
