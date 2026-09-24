@@ -5,7 +5,6 @@ defmodule QUIC.Interop.Run do
   def run(mode, directory) do
     scenario = System.get_env("INTEROP_SCENARIO", "baseline")
     unless scenario in ["baseline", "retry"], do: raise("unsupported scenario")
-    if scenario == "retry" and mode != "client", do: raise("server Retry not yet implemented")
     File.mkdir_p!(directory)
     fixture = Path.expand("deps/ex_ssl/test/fixtures/server_flight")
 
@@ -29,7 +28,9 @@ defmodule QUIC.Interop.Run do
 
     endpoint =
       if mode == "server" do
-        {:ok, endpoint} = Endpoint.start_link(role: :server, tls: server_tls)
+        {:ok, endpoint} =
+          Endpoint.start_link(role: :server, retry: scenario == "retry", tls: server_tls)
+
         endpoint
       end
 
@@ -58,7 +59,7 @@ defmodule QUIC.Interop.Run do
       Path.join(directory, "udp.jsonl")
     ]
 
-    args = if scenario == "retry", do: args ++ ["--retry"], else: args
+    args = if scenario == "retry" and mode == "client", do: args ++ ["--retry"], else: args
 
     peer =
       Port.open(

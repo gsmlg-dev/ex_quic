@@ -44,7 +44,12 @@ defmodule QUIC.HandshakeScheduler do
   def new(role, opts) when role in [:client, :server] do
     with {:ok, dcid} <- required_cid(opts, :dcid),
          {:ok, scid} <- required_cid(opts, :scid),
-         {:ok, initial} <- initial_keys(opts, Keyword.get(opts, :original_dcid, dcid), role),
+         {:ok, initial} <-
+           initial_keys(
+             opts,
+             Keyword.get(opts, :initial_key_dcid, Keyword.get(opts, :original_dcid, dcid)),
+             role
+           ),
          {:ok, tls, tls_effects} <- TLSDriver.new(role, tls_options(opts)) do
       recovery = Keyword.get(opts, :recovery, Recovery.new())
 
@@ -53,11 +58,17 @@ defmodule QUIC.HandshakeScheduler do
         dcid: dcid,
         scid: scid,
         original_dcid: Keyword.get(opts, :original_dcid, dcid),
+        retry_scid: Keyword.get(opts, :retry_scid),
         tls: tls,
         recovery: recovery,
         keys: Map.put(Keyword.get(opts, :keys, %{}), :initial, initial),
         read_keys:
-          initial_read_keys(opts, Keyword.get(opts, :original_dcid, dcid), role, initial),
+          initial_read_keys(
+            opts,
+            Keyword.get(opts, :initial_key_dcid, Keyword.get(opts, :original_dcid, dcid)),
+            role,
+            initial
+          ),
         max_packet_size: Keyword.get(opts, :max_packet_size, @default_max_packet),
         min_initial_size: Keyword.get(opts, :min_initial_size, 1200),
         max_queue: Keyword.get(opts, :max_queue, 64)
@@ -707,6 +718,8 @@ defmodule QUIC.HandshakeScheduler do
     |> Keyword.drop([
       :dcid,
       :original_dcid,
+      :initial_key_dcid,
+      :retry_scid,
       :scid,
       :initial_keys,
       :keys,

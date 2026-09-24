@@ -14,7 +14,7 @@ client Retry scenario also passes as recorded below.
 | ex_quic client → aioquic server | passed; TLS_AES_256_GCM_SHA384 (0x1302), server certificate authenticated, QUIC confirmed |
 | aioquic client → ex_quic server | passed; TLS_AES_128_GCM_SHA256 (0x1301), peer Finished and QUIC confirmation; no client-certificate identity claimed |
 | ex_quic client → aioquic Retry server | passed; integrity tag, token echo, preserved ClientHello, increasing packet numbers and authenticated Retry CID |
-| ex_quic Retry server → aioquic client | not run; authenticated expiring server-token policy still pending |
+| aioquic client → ex_quic Retry server | passed; authenticated expiring address-bound token, both handshakes and QUIC confirmation |
 | Independent Initial/Handshake loss, reorder, duplicates, corruption | not run; local self-connection loss tests are separate evidence |
 | Independent wrong certificate / ALPN cases | not run; existing local negative tests are separate evidence |
 | Independent ChaCha negotiation | not run; packet AEAD and RFC 8439 block/header-mask unit tests pass |
@@ -89,9 +89,48 @@ allocation, installs fresh Initial packet protection from the Retry SCID, and
 echoes the token in the new Initial. Authenticated transport parameters must
 match the Retry SCID; a Retry CID is forbidden when no Retry occurred.
 
-Server-side token issuance/validation and the remaining independent impairment
-and negative-case matrix remain open.
+The remaining independent impairment and negative-case matrix remains open.
+Server-side Retry evidence follows below.
 
 Retry increment local gates: format, warnings-as-errors compilation, all 100
 ExUnit tests (seed 619226), and diff checks exited 0. Server Retry, independent
 impairment and independent certificate/ALPN negatives were not run here.
+
+## Server Retry increment
+
+```sh
+INTEROP_SCENARIO=retry mix run scripts/interop/run.exs server _build/interop/server-retry
+```
+
+Exited 0 on 2026-09-24 with aioquic 1.2.0 / Python 3.12.12 and
+Elixir 1.20.1 / OTP 29. The aioquic client observed Retry and completed the
+verified certificate handshake with ALPN `ex-quic-test`; the local server
+reached established/confirmed with valid parameters and a validated address.
+One Retry was sent and one token was admitted. Capture/results are archived
+as `server-retry-*`, with SHA256SUMS. Source parent: `36bec72771de676213794ce278be4672bce691b8`,
+with this server Retry increment applied.
+
+Server endpoints opt in using `retry: true`. Tokens use an endpoint-generation
+32-byte random HMAC key, bind the client IP/port, original DCID and Retry SCID,
+and expire after `retry_ttl` monotonic microseconds (default 5,000,000; maximum
+60,000,000). A restart invalidates them. Tokens are not single-use: retransmitted
+Initials route to the existing connection; after connection removal a still-valid
+token can admit another bounded connection from the same address. They prove
+address reachability, not client identity.
+
+`retry_limit` bounds issuance attempts per endpoint-wide one-second fixed window
+(default 100, maximum 10,000); it is not a per-client fairness guarantee.
+There is no per-peer token cache. A Retry response is smaller than the required
+1200-byte incoming Initial. Nonempty invalid tokens are dropped without a new
+Retry, and no connection is allocated before token validation. Original DCID
+transport parameters remain separate from the Retry DCID used for Initial keys.
+
+Unit tests mutate every token byte and cover expiry, future time, key replacement,
+IPv4/IPv6, address/port/CID mismatch and bounded malformed inputs. UDP tests
+cover pre-validation allocation, rate limiting, cross-address replay rejection,
+duplicate routing and a real certificate handshake. Independent impairment and
+certificate/ALPN negative scenarios are still pending; M3-E remains incomplete.
+
+Server Retry local gates: `mix format --check-formatted`,
+`mix compile --warnings-as-errors`, `mix test` (104 tests, seed 184043),
+and `git diff --check` passed. The independent server Retry command exited 0.

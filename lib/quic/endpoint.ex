@@ -8,7 +8,7 @@ defmodule QUIC.Endpoint do
   exposed. This internal endpoint is not an independent interoperability claim.
   """
   use GenServer
-  alias QUIC.{Codec, Connection, TransportParameters}
+  alias QUIC.{Codec, Connection, TransportParameters, Retry, Protection}
   alias QUIC.IO.GenUDP
 
   @cid_length 8
@@ -22,11 +22,26 @@ defmodule QUIC.Endpoint do
     role = Keyword.fetch!(opts, :role)
     max = Keyword.get(opts, :max_connections, 128)
 
-    if role in [:client, :server] and is_integer(max) and max > 0 do
+    retry = Keyword.get(opts, :retry, false)
+    retry_limit = Keyword.get(opts, :retry_limit, 100)
+    retry_ttl = Keyword.get(opts, :retry_ttl, 5_000_000)
+
+    if role in [:client, :server] and is_integer(max) and max > 0 and
+         is_boolean(retry) and (not retry or role == :server) and
+         is_integer(retry_limit) and retry_limit in 1..10_000 and
+         is_integer(retry_ttl) and retry_ttl in 1..60_000_000 do
       with {:ok, socket} <-
              GenUDP.open(Keyword.take(opts, [:ip, :port]) ++ [owner: self(), role: role]) do
         data = %{
           role: role,
+          retry: retry,
+          retry_key: if(retry, do: :crypto.strong_rand_bytes(32)),
+          retry_limit: retry_limit,
+          retry_ttl: retry_ttl,
+          retry_window: GenUDP.monotonic_time(),
+          retry_count: 0,
+          retry_sent: 0,
+          retry_validated: 0,
           socket: socket,
           monitor: Process.monitor(socket),
           opts: opts,
@@ -77,6 +92,8 @@ defmodule QUIC.Endpoint do
        %{
          routes: map_size(data.routes) + map_size(data.provisional),
          admission_drops: data.admission_drops,
+         retry_sent: data.retry_sent,
+         retry_validated: data.retry_validated,
          last_error: data.last_error
        }, data}
 
@@ -131,10 +148,7 @@ defmodule QUIC.Endpoint do
       if map_size(data.connections) >= data.max do
         %{data | admission_drops: data.admission_drops + 1}
       else
-        case admit(data, remote, initial.dcid, initial.scid) do
-          {:ok, next, entry} -> deliver(next, entry, bytes, at)
-          {:error, _} -> %{data | admission_drops: data.admission_drops + 1}
-        end
+        admit_initial(data, remote, initial, bytes, at)
       end
     else
       _ -> data
@@ -143,20 +157,86 @@ defmodule QUIC.Endpoint do
 
   defp maybe_admit(data, _, _, _), do: data
 
-  defp admit(data, remote, original_dcid, peer_scid) do
+  defp admit_initial(%{retry: true} = data, remote, %{token: <<>>} = initial, _bytes, at) do
+    now = GenUDP.monotonic_time()
+
+    data =
+      if now - data.retry_window >= 1_000_000,
+        do: %{data | retry_window: now, retry_count: 0},
+        else: data
+
+    if data.retry_count >= data.retry_limit do
+      %{data | admission_drops: data.admission_drops + 1}
+    else
+      scid = :crypto.strong_rand_bytes(@cid_length)
+      token = Retry.issue(data.retry_key, remote, initial.dcid, scid, at)
+
+      body =
+        <<0xF0, 1::32, byte_size(initial.scid), initial.scid::binary, byte_size(scid),
+          scid::binary, token::binary>>
+
+      {:ok, tag} = Protection.retry_tag(initial.dcid, body)
+      data = %{data | retry_count: data.retry_count + 1}
+
+      case GenUDP.send(data.socket, body <> tag, remote) do
+        {:ok, _sent_at} -> %{data | retry_sent: data.retry_sent + 1}
+        {:error, reason} -> %{data | last_error: {:retry_send, reason}}
+      end
+    end
+  end
+
+  defp admit_initial(%{retry: true} = data, remote, initial, bytes, at) do
+    with {:ok, original} <-
+           Retry.verify(
+             data.retry_key,
+             remote,
+             initial.dcid,
+             initial.token,
+             GenUDP.monotonic_time(),
+             data.retry_ttl
+           ),
+         {:ok, next, entry} <- admit(data, remote, original, initial.scid, initial.dcid) do
+      deliver(%{next | retry_validated: next.retry_validated + 1}, entry, bytes, at)
+    else
+      {:error, _} -> %{data | admission_drops: data.admission_drops + 1}
+    end
+  end
+
+  defp admit_initial(data, remote, initial, bytes, at) do
+    case admit(data, remote, initial.dcid, initial.scid) do
+      {:ok, next, entry} -> deliver(next, entry, bytes, at)
+      {:error, _} -> %{data | admission_drops: data.admission_drops + 1}
+    end
+  end
+
+  defp admit(data, remote, original_dcid, peer_scid, retry_scid \\ nil) do
     scid = :crypto.strong_rand_bytes(@cid_length)
     dcid = peer_scid || original_dcid
 
     with false <- Map.has_key?(data.routes, scid),
          {:ok, tls} <-
-           materialize(Keyword.get(data.opts, :tls, []), data.role, original_dcid, scid),
+           materialize(
+             Keyword.get(data.opts, :tls, []),
+             data.role,
+             original_dcid,
+             scid,
+             retry_scid
+           ),
          opts <- [
            role: data.role,
+           address_validated: retry_scid != nil,
            owner: self(),
            io: {GenUDP, data.socket},
            remote: remote,
            handshake_timeout: Keyword.get(data.opts, :handshake_timeout, 10_000),
-           scheduler: [dcid: dcid, scid: scid, original_dcid: original_dcid] ++ tls
+           scheduler:
+             [
+               dcid: dcid,
+               scid: scid,
+               original_dcid: original_dcid,
+               initial_key_dcid: retry_scid || original_dcid,
+               retry_scid: retry_scid
+             ] ++ tls
          ],
          {:ok, pid} <- Connection.start(opts),
          {:ok, generation} <- generation(pid) do
@@ -170,7 +250,10 @@ defmodule QUIC.Endpoint do
 
       data =
         if data.role == :server,
-          do: %{data | provisional: Map.put(data.provisional, {remote, original_dcid}, pid)},
+          do: %{
+            data
+            | provisional: Map.put(data.provisional, {remote, retry_scid || original_dcid}, pid)
+          },
           else: data
 
       {:ok, data, entry}
@@ -186,9 +269,11 @@ defmodule QUIC.Endpoint do
     :exit, _ -> {:error, :connection_start_failed}
   end
 
-  defp materialize(tls, role, original, scid) do
+  defp materialize(tls, role, original, scid, retry_scid) do
     entries = [%{id: 0x0F, value: scid}]
     entries = if role == :server, do: [%{id: 0, value: original} | entries], else: entries
+
+    entries = if retry_scid, do: [%{id: 0x10, value: retry_scid} | entries], else: entries
 
     with {:ok, generated} <- TransportParameters.encode(entries, role: role),
          raw <- Keyword.get(tls, :transport_parameters, generated),
@@ -197,6 +282,7 @@ defmodule QUIC.Endpoint do
            TransportParameters.validate(decoded,
              role: role,
              initial_source_connection_id: scid,
+             retry_source_connection_id: retry_scid,
              original_destination_connection_id: if(role == :server, do: original)
            ) do
       {:ok, Keyword.put(tls, :transport_parameters, raw)}

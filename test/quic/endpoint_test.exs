@@ -228,6 +228,82 @@ defmodule QUIC.EndpointTest do
     end
   end
 
+  test "server Retry validates the address and completes the certificate handshake" do
+    {server_tls, client_tls} = certificate_options()
+    {:ok, server} = Endpoint.start_link(role: :server, retry: true, tls: server_tls)
+
+    {:ok, client} =
+      Endpoint.start_link(role: :client, remote: Endpoint.local(server), tls: client_tls)
+
+    on_exit(fn -> Enum.each([client, server], &stop/1) end)
+
+    assert eventually(fn ->
+             case {Endpoint.connections(client), Endpoint.connections(server)} do
+               {[c], [s]} ->
+                 Connection.status(c.pid).quic_confirmed and
+                   Connection.status(s.pid).quic_confirmed
+
+               _ ->
+                 false
+             end
+           end)
+
+    assert %{retry_sent: 1, retry_validated: 1} = Endpoint.stats(server)
+    [s] = Endpoint.connections(server)
+    assert Connection.status(s.pid).address_validated
+    assert Connection.status(s.pid).parameters_valid
+  end
+
+  test "Retry admission allocates no connection before validation and bounds replies" do
+    {:ok, server} =
+      Endpoint.start_link(role: :server, retry: true, retry_limit: 1, tls: [adapter: RecordedTLS])
+
+    {:ok, socket} = :gen_udp.open(0, [:binary, {:active, false}, {:ip, {127, 0, 0, 1}}])
+    {:ok, other} = :gen_udp.open(0, [:binary, {:active, false}, {:ip, {127, 0, 0, 1}}])
+
+    on_exit(fn ->
+      stop(server)
+      :gen_udp.close(socket)
+      :gen_udp.close(other)
+    end)
+
+    {ip, port} = Endpoint.local(server)
+
+    {:ok, scheduler, [initial]} =
+      QUIC.HandshakeScheduler.new(:client,
+        dcid: <<1, 2, 3, 4, 5, 6, 7, 8>>,
+        scid: <<8, 7, 6, 5, 4, 3, 2, 1>>,
+        adapter: RecordedTLS
+      )
+
+    :ok = :gen_udp.send(socket, ip, port, initial.bytes)
+    assert {:ok, {^ip, ^port, retry}} = :gen_udp.recv(socket, 0, 1_000)
+    assert byte_size(retry) < 1200
+    assert Endpoint.connections(server) == []
+    assert %{routes: 0, retry_sent: 1, retry_validated: 0} = Endpoint.stats(server)
+
+    :ok = :gen_udp.send(socket, ip, port, initial.bytes)
+    assert eventually(fn -> Endpoint.stats(server).admission_drops == 1 end)
+    assert {:error, :timeout} = :gen_udp.recv(socket, 0, 20)
+
+    {:ok, _, [%{type: :retry, generated: [retried]}]} =
+      QUIC.HandshakeScheduler.receive_datagram(scheduler, retry, 0)
+
+    :ok = :gen_udp.send(other, ip, port, retried.bytes)
+    assert eventually(fn -> Endpoint.stats(server).admission_drops == 2 end)
+    assert Endpoint.connections(server) == []
+    assert {:error, :timeout} = :gen_udp.recv(other, 0, 20)
+
+    :ok = :gen_udp.send(socket, ip, port, retried.bytes)
+    assert eventually(fn -> Endpoint.stats(server).retry_validated == 1 end)
+    [entry] = Endpoint.connections(server)
+    assert Connection.status(entry.pid).address_validated
+    :ok = :gen_udp.send(socket, ip, port, retried.bytes)
+    assert {:ok, {^ip, ^port, _}} = :gen_udp.recv(socket, 0, 1_000)
+    assert [^entry] = Endpoint.connections(server)
+    assert %{retry_sent: 1, retry_validated: 1} = Endpoint.stats(server)
+  end
+
   defp certificate_options do
     # Public disposable credentials from the SHA-pinned ex_ssl test fixtures.
     fixture = Path.expand("../../deps/ex_ssl/test/fixtures/server_flight", __DIR__)

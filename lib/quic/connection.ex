@@ -44,11 +44,16 @@ defmodule QUIC.Connection do
          is_integer(timeout) and timeout > 0 do
       with {:ok, budget} <- Endpoint.new(Keyword.get(opts, :limits, [])) do
         # Clients are not subject to the server's pre-validation amplification limit.
-        budget = if role == :client, do: %{budget | address_validated: true}, else: budget
+        budget =
+          if role == :client or Keyword.get(opts, :address_validated, false),
+            do: %{budget | address_validated: true},
+            else: budget
+
         generation = make_ref()
 
         data = %{
           role: role,
+          address_validated: Keyword.get(opts, :address_validated, false),
           adapter: adapter,
           writer: writer,
           owner: owner,
@@ -80,6 +85,11 @@ defmodule QUIC.Connection do
   def handle_event(:internal, :start, :handshaking, data) do
     case HandshakeScheduler.new(data.role, data.scheduler_opts) do
       {:ok, scheduler, effects} ->
+        scheduler =
+          if data.address_validated,
+            do: %{scheduler | tls: TLSDriver.mark_address_validated(scheduler.tls)},
+            else: scheduler
+
         advance(%{data | scheduler: scheduler}, effects, [])
 
       {:error, reason} ->
@@ -262,7 +272,7 @@ defmodule QUIC.Connection do
              TransportParameters.validate(parameters,
                role: peer_role,
                initial_source_connection_id: scheduler.peer_initial_scid,
-               retry_source_connection_id: scheduler.retry_scid,
+               retry_source_connection_id: if(peer_role == :server, do: scheduler.retry_scid),
                original_destination_connection_id:
                  if(peer_role == :server, do: scheduler.original_dcid)
              ) do
