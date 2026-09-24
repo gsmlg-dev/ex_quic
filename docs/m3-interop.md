@@ -238,3 +238,18 @@ Negative increment local gates: formatting, warnings-as-errors compilation,
 104 ExUnit tests (seed 860694), and diff checks passed. An ordinary client
 handshake was rerun after the runner changes and passed. All six final negative
 cells exited 0; the earlier harness failures are described above.
+
+## Reverse-role impairment revalidation
+
+On 2026-09-24, the server-role runner was revalidated against aioquic 1.2.0
+for `drop_initial`, `drop_handshake`, `reorder`, and `corrupt`. Each command
+exited 0 and emitted the required impairment event, `handshake_complete`, and
+`quic_confirmed`; no endpoint admission drops or runtime errors were reported.
+
+```sh
+INTEROP_SCENARIO=<scenario> mix run scripts/interop/run.exs server _build/interop/reverse-<run>-<scenario>
+```
+
+This rerun is evidence for the aioquic-client to ex_quic-server direction. It
+does not add independent evidence for sustained-loss congestion pressure,
+malformed authenticated packets, or an HRR-capable peer.
