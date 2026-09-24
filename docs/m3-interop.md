@@ -20,6 +20,14 @@ validation order and earlier partial status; none is a general security claim.
 | Independent wrong CA, hostname and ALPN | passed in both roles; exact failures recorded below |
 | Independent ChaCha negotiation | not run; packet AEAD and RFC 8439 block/header-mask unit tests pass |
 
+## Subsequent key-retirement regression
+
+The [key-retirement increment](m3-key-retirement.md) reran all 20 cells above and
+added both-role authenticated HANDSHAKE_DONE packet loss: 22/22 passed. Positive
+runs now require independent QUIC confirmation in addition to HandshakeCompleted.
+Its captures/results live in the separate `key-retirement/` fixture directory,
+so the historical evidence below remains intact.
+
 ## Reproduction
 
 From the repository root, with `uv` and the Mix dependencies available:

@@ -158,8 +158,24 @@ defmodule QUIC.EndpointTest do
     Process.sleep(2_100)
     assert Connection.status(c.pid).phase == :established
     assert Connection.status(s.pid).phase == :established
-    assert Connection.status(c.pid).packets.initial.acked >= 1
-    assert Connection.status(c.pid).packets.handshake.acked >= 1
+
+    for connection <- [c, s] do
+      status = Connection.status(connection.pid)
+      assert status.retired_levels == [:initial, :handshake]
+      assert status.packets.initial == %{sent: 0, acked: 0, queued: 0, failed: 0}
+      assert status.packets.handshake == %{sent: 0, acked: 0, queued: 0, failed: 0}
+      {:established, data} = :sys.get_state(connection.pid)
+      refute Map.has_key?(data.scheduler.keys, :initial)
+      refute Map.has_key?(data.scheduler.keys, :handshake)
+      assert data.scheduler.read_keys == %{}
+
+      for level <- [:initial, :handshake] do
+        assert data.scheduler.tls.levels[level].sent == []
+        assert data.scheduler.tls.levels[level].pending == <<>>
+        assert data.scheduler.tls.levels[level].recv.intervals == []
+      end
+    end
+
     assert Connection.status(s.pid).packets.application.acked >= 1
   end
 

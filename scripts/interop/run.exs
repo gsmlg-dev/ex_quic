@@ -4,7 +4,16 @@ defmodule QUIC.Interop.Run do
 
   def run(mode, directory) do
     scenario = System.get_env("INTEROP_SCENARIO", "baseline")
-    impairments = ["drop_initial", "drop_handshake", "reorder", "duplicate", "corrupt"]
+
+    impairments = [
+      "drop_initial",
+      "drop_handshake",
+      "reorder",
+      "duplicate",
+      "corrupt",
+      "drop_handshake_done"
+    ]
+
     negatives = ["wrong_ca", "wrong_hostname", "wrong_alpn"]
 
     unless scenario in (["baseline", "retry"] ++ impairments ++ negatives),
@@ -171,15 +180,23 @@ defmodule QUIC.Interop.Run do
         else: messages
 
     states = Enum.flat_map(Endpoint.connections(endpoint), &connection_status/1)
-    local_complete = Enum.any?(states, &(&1.phase == :established and &1.quic_confirmed))
 
+    local_complete =
+      Enum.any?(
+        states,
+        &(&1.phase == :established and &1.quic_confirmed and
+            &1.retired_levels == [:initial, :handshake])
+      )
+
+    peer_confirmed = Enum.any?(messages, &match?(%{"event" => "quic_confirmed"}, &1))
     peer_failed = Enum.any?(messages, &match?(%{"event" => "terminated"}, &1))
 
-    if (local_complete and peer_complete) or
+    if (local_complete and peer_complete and peer_confirmed) or
          (negative and (match?({:tls, _, _, _}, error) or peer_failed)) or
          System.monotonic_time(:millisecond) >= deadline do
       %{
-        passed: local_complete and peer_complete,
+        passed: local_complete and peer_complete and peer_confirmed,
+        peer_confirmed: peer_confirmed,
         peer_complete: peer_complete,
         failure:
           case error do

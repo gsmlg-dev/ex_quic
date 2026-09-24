@@ -57,7 +57,10 @@ production behavior or error gate was weakened to satisfy this check.
 ## Remaining wider acceptance work
 
 These results cover the requested route, not all endpoint lifecycle behavior.
-Review/implement role-specific key retirement, strict header/CID/frame legality,
+Role-specific Initial/Handshake retirement is now covered by
+[the key-retirement increment](m3-key-retirement.md), including all 20 prior
+network scenarios and both-role HANDSHAKE_DONE loss. Remaining work includes
+strict header/CID/frame legality,
 large CRYPTO fragmentation, congestion-full PTO, long-lived sent-history
 reclamation and idle/closing/draining behavior. Independent invalid-parameter and
 corrupted-Finished scenarios, ChaCha negotiation, HRR-capable second independent

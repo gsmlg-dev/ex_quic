@@ -7,6 +7,9 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
+from aioquic.quic.crypto import CryptoContext
+from aioquic.tls import CipherSuite, Epoch
 
 from peer import Capture
 
@@ -42,6 +45,25 @@ class ImpairmentTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(delivered), 1)
                 self.assertEqual(len(delivered[0]), len(self.flight))
                 self.assertEqual(sum((a ^ b).bit_count() for a, b in zip(delivered[0], self.flight)), 1)
+
+    async def test_handshake_done_drop_requires_authenticated_frame_not_just_short_header(self):
+        crypto = CryptoContext()
+        crypto.setup(cipher_suite=CipherSuite.AES_128_GCM_SHA256, secret=bytes(32), version=1)
+        capture = self.capture('drop_handshake_done')
+        capture.connections = [SimpleNamespace(_cryptos={Epoch.ONE_RTT: SimpleNamespace(send=crypto)}, _packet_number=0)]
+        header = bytes([0x40]) + b'12345678' + bytes([0])
+        ping = crypto.encrypt_packet(header, bytes([1, 0, 0]), 0)
+        done = crypto.encrypt_packet(header, bytes([0x1E, 0, 0]), 0)
+        damaged = done[:-1] + bytes([done[-1] ^ 1])
+        delivered = []
+        output = lambda data, addr: delivered.append(data)
+        with contextlib.redirect_stdout(io.StringIO()) as events:
+            capture.route('send', ping, self.address, output)
+            capture.route('send', damaged, self.address, output)
+            self.assertFalse(capture.applied)
+            capture.route('send', done, self.address, output)
+        self.assertEqual(delivered, [ping, damaged])
+        self.assertEqual(json.loads(events.getvalue())['action'], 'drop_handshake_done')
 
     async def test_reorder_requires_a_second_datagram_and_delivers_it_first(self):
         capture = self.capture('reorder')

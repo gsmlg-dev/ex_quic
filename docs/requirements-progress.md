@@ -14,6 +14,7 @@ This record tracks incremental work against `docs/implement-plan.md`; intermedia
 | Transport parameters | `QUIC.TransportParameters`, authenticated parameter/CID readiness checks in `QUIC.Connection` | basic v1 semantic validation implemented |
 | UDP runtime | `QUIC.Connection`, `QUIC.Endpoint`, `QUIC.IO.GenUDP`; lifecycle, ACK/PTO, Initial/Handshake loss tests | experimental M3-D runtime; requested M3-E matrix passes |
 | M3-C packet keys and protected handshake packets | Recorded Secret actions, independent OTP packet oracle, authenticated level/space errors, retained CRYPTO and fresh-number retransmission | requested C.1/C.2/C.3 checks pass |
+| Handshake key retirement | Role-specific receipt/confirmation triggers; bounded buffer/history cleanup; late-event tests; all 20 prior network cases plus both-role HANDSHAKE_DONE loss | implemented; [evidence](m3-key-retirement.md) |
 | M3-E independent handshake matrix | aioquic 1.2.0; both roles, Retry, Initial/Handshake loss, reorder, duplicate, corruption, wrong CA/hostname/ALPN; archived UDP bytes and results | requested matrix passes; not full QUIC conformance |
 | Initial inspector / fingerprint replay | pinned independent aioquic 1.2.0 Initial replay, duplicate suppression, incomplete completion, expiry/conflict checks and two-ClientHello ordinal lifecycle tests pass; independent HRR peer replay remains pending | M2 |
 

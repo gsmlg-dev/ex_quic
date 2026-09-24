@@ -117,7 +117,9 @@ defmodule QUIC.HandshakeScheduler do
 
   @doc "Queue an ACK frame for the next packet in a packet-number space."
   def queue_ack(%__MODULE__{} = state, space, ack) when space in @spaces and is_map(ack) do
-    %{state | pending_acks: Map.put(state.pending_acks, space, [ack])}
+    if retired?(state, space),
+      do: state,
+      else: %{state | pending_acks: Map.put(state.pending_acks, space, [ack])}
   end
 
   def queue_ack(state, _, _), do: state
@@ -127,11 +129,59 @@ defmodule QUIC.HandshakeScheduler do
       when space in @spaces and is_integer(number) do
     case Recovery.local_send(state.recovery, space, number, result, at) do
       {:ok, recovery, statuses} ->
-        {:ok, %{state | recovery: recovery, queued: max(0, state.queued - 1)}, statuses}
+        if statuses == [:retired] do
+          {:ok, state, statuses}
+        else
+          next = %{state | recovery: recovery, queued: max(0, state.queued - 1)}
+
+          next =
+            if state.role == :client and space == :handshake and result == :ok,
+              do: retire_level(next, :initial),
+              else: next
+
+          {:ok, next, statuses}
+        end
 
       error ->
         error
     end
+  end
+
+  @doc "Whether the packet-number space is permanently retired."
+  @spec retired?(t(), :initial | :handshake | :application) :: boolean()
+  def retired?(state, level), do: state.recovery.spaces[level].retired
+
+  @doc "Drop the QUIC keys, retained packets and CRYPTO storage for an obsolete level."
+  @spec retire_level(t(), :initial | :handshake) :: t()
+  def retire_level(state, level) when level in [:initial, :handshake] do
+    if retired?(state, level) do
+      state
+    else
+      queued =
+        Enum.count(state.recovery.spaces[level].sent, fn {_, packet} ->
+          packet.status in [:reserved, :queued]
+        end)
+
+      %{
+        state
+        | keys: Map.delete(state.keys, level),
+          read_keys: if(level == :initial, do: %{}, else: state.read_keys),
+          tls: TLSDriver.retire_level(state.tls, level),
+          recovery: Recovery.retire_space(state.recovery, level),
+          pending: Enum.reject(state.pending, &(&1.level == level)),
+          pending_acks: Map.delete(state.pending_acks, level),
+          pending_control: Map.delete(state.pending_control, level),
+          effects: Enum.reject(state.effects, &(&1.level == level)),
+          queued: max(0, state.queued - queued)
+      }
+    end
+  end
+
+  @doc "Confirm QUIC and retire Handshake after role-specific confirmation."
+  @spec confirm_handshake(t()) :: t()
+  def confirm_handshake(state) do
+    state = %{state | tls: TLSDriver.mark_quic_confirmed(state.tls)}
+    retire_level(state, :handshake)
   end
 
   @doc "Apply an authenticated peer ACK to Recovery."
@@ -163,6 +213,9 @@ defmodule QUIC.HandshakeScheduler do
   end
 
   def receive_datagram(state, _datagram, _at), do: {:error, :invalid_datagram, state}
+
+  defp apply_retry(%{recovery: %{spaces: %{initial: %{retired: true}}}}, _packet),
+    do: {:error, :unexpected_retry}
 
   defp apply_retry(
          %{role: :client, retry_scid: nil, peer_initial_scid: nil} = state,
@@ -216,10 +269,29 @@ defmodule QUIC.HandshakeScheduler do
            {:ok, recovery} <- Recovery.note_received(state.recovery, packet.space, packet.number),
            {:ok, next, generated} <-
              dispatch_inbound(learn_peer_cid(%{state | recovery: recovery}, packet), packet, at) do
+        next =
+          if next.role == :server and packet.level == :handshake do
+            next = %{next | tls: TLSDriver.mark_address_validated(next.tls)}
+            retire_level(next, :initial)
+          else
+            next
+          end
+
         {:ok, next, generated, packet.packet_length}
       end
 
     case result do
+      {:retired, length} ->
+        <<_packet::binary-size(^length), rest::binary>> = bytes
+
+        receive_coalesced(
+          state,
+          rest,
+          at,
+          events ++ [%{type: :discard, reason: :retired_level}],
+          count + 1
+        )
+
       {:ok, next, generated, length} ->
         <<_packet::binary-size(^length), rest::binary>> = bytes
         receive_coalesced(next, rest, at, events ++ generated, count + 1)
@@ -659,7 +731,8 @@ defmodule QUIC.HandshakeScheduler do
          secret: secret
        })
        when level in [:handshake, :application] and direction in [:read, :write] do
-    with {:ok, derived} <- Protection.packet_keys(level, cipher_suite, aead, hkdf, secret) do
+    with false <- retired?(state, level),
+         {:ok, derived} <- Protection.packet_keys(level, cipher_suite, aead, hkdf, secret) do
       context = Map.put(derived, :direction, direction)
       existing = get_in(state.keys, [level, direction])
 
@@ -680,6 +753,9 @@ defmodule QUIC.HandshakeScheduler do
         true ->
           {:error, {:conflicting_secret, level, direction}}
       end
+    else
+      true -> {:error, :retired_level}
+      {:error, _} = error -> error
     end
   end
 
@@ -834,7 +910,7 @@ defmodule QUIC.HandshakeScheduler do
 
       %{type: :handshake_done} when level == :application ->
         if state.role == :client and state.tls.facts.tls_complete do
-          next = %{state | tls: TLSDriver.mark_quic_confirmed(state.tls)}
+          next = confirm_handshake(state)
 
           dispatch_frames(next, level, space, number, rest, at, [
             %{type: :handshake_done} | events
@@ -856,6 +932,7 @@ defmodule QUIC.HandshakeScheduler do
 
   defp decode_protected_packet(state, datagram) do
     with {:ok, parsed} <- parse_protected_header(state, datagram),
+         false <- retired?(state, parsed.level) && {:retired, parsed.packet_length},
          keys when is_map(keys) <- read_key(state, parsed.level),
          packet <- binary_part(datagram, 0, parsed.packet_length),
          {:ok, unprotected, pn_len} <-
@@ -884,6 +961,7 @@ defmodule QUIC.HandshakeScheduler do
            ) do
       {:ok, Map.merge(parsed, %{number: number, plaintext: plaintext})}
     else
+      {:retired, length} -> {:retired, length}
       nil -> {:error, :missing_read_key}
       {:error, reason} -> {:error, reason}
       _ -> {:error, :malformed_protected_packet}

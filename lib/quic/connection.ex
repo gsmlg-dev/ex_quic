@@ -117,6 +117,8 @@ defmodule QUIC.Connection do
       peer_authenticated: data.scheduler.tls.facts.peer_authenticated,
       generation: data.generation,
       packets: packets,
+      retired_levels:
+        Enum.filter([:initial, :handshake], &HandshakeScheduler.retired?(data.scheduler, &1)),
       pending_datagrams: length(data.pending),
       bytes_sent: data.budget.bytes_sent,
       bytes_received: data.budget.bytes_received,
@@ -199,7 +201,7 @@ defmodule QUIC.Connection do
         {:ok, budget} = Endpoint.receive_bytes(data.budget, byte_size(bytes))
 
         {scheduler, budget} =
-          if data.role == :server and handshake_packet?(bytes) do
+          if data.role == :server and scheduler.tls.facts.address_validated do
             {:ok, validated} = Endpoint.validate_address(budget)
             {%{scheduler | tls: TLSDriver.mark_address_validated(scheduler.tls)}, validated}
           else
@@ -277,9 +279,8 @@ defmodule QUIC.Connection do
                  if(peer_role == :server, do: scheduler.original_dcid)
              ) do
         if data.role == :server do
-          case HandshakeScheduler.handshake_done(scheduler) do
+          case HandshakeScheduler.handshake_done(HandshakeScheduler.confirm_handshake(scheduler)) do
             {:ok, scheduler, effects} ->
-              scheduler = %{scheduler | tls: TLSDriver.mark_quic_confirmed(scheduler.tls)}
               {:ok, %{data | scheduler: scheduler, ready: true, parameters_valid: true}, effects}
 
             {:error, reason, _} ->
@@ -301,7 +302,8 @@ defmodule QUIC.Connection do
   end
 
   defp advance(data, effects, replies) do
-    pending = data.pending ++ effects
+    pending =
+      Enum.reject(data.pending ++ effects, &HandshakeScheduler.retired?(data.scheduler, &1.level))
 
     cond do
       length(pending) > data.budget.max_queue ->
@@ -328,40 +330,50 @@ defmodule QUIC.Connection do
   defp flush(%{pending: []} = data), do: {:ok, data}
 
   defp flush(%{pending: [effect | rest]} = data) do
-    if expired?(data) do
-      {:error, :handshake_timeout, data}
-    else
-      case Endpoint.enqueue(data.budget, effect.bytes, data.remote, data.adapter.monotonic_time()) do
-        {:error, :anti_amplification} ->
-          {:ok, data}
+    cond do
+      HandshakeScheduler.retired?(data.scheduler, effect.level) ->
+        flush(%{data | pending: rest})
 
-        {:error, reason} ->
-          {:error, reason, data}
+      expired?(data) ->
+        {:error, :handshake_timeout, data}
 
-        {:ok, budget, send} ->
-          {:ok, budget, ^send} = Endpoint.dequeue(budget)
-          {result, at} = local_send(data, effect.bytes)
-          {:ok, budget, _receipt} = Endpoint.local_send(budget, send, result, at)
+      true ->
+        case Endpoint.enqueue(
+               data.budget,
+               effect.bytes,
+               data.remote,
+               data.adapter.monotonic_time()
+             ) do
+          {:error, :anti_amplification} ->
+            {:ok, data}
 
-          case HandshakeScheduler.local_send(
-                 data.scheduler,
-                 effect.space,
-                 effect.packet_number,
-                 result,
-                 at
-               ) do
-            {:ok, scheduler, _statuses} ->
-              next = %{data | scheduler: scheduler, budget: budget, pending: rest}
+          {:error, reason} ->
+            {:error, reason, data}
 
-              case result do
-                :ok -> flush(next)
-                {:error, reason} -> {:error, {:local_send, reason}, next}
-              end
+          {:ok, budget, send} ->
+            {:ok, budget, ^send} = Endpoint.dequeue(budget)
+            {result, at} = local_send(data, effect.bytes)
+            {:ok, budget, _receipt} = Endpoint.local_send(budget, send, result, at)
 
-            {:error, reason} ->
-              {:error, {:send_accounting, reason}, data}
-          end
-      end
+            case HandshakeScheduler.local_send(
+                   data.scheduler,
+                   effect.space,
+                   effect.packet_number,
+                   result,
+                   at
+                 ) do
+              {:ok, scheduler, _statuses} ->
+                next = %{data | scheduler: scheduler, budget: budget, pending: rest}
+
+                case result do
+                  :ok -> flush(next)
+                  {:error, reason} -> {:error, {:local_send, reason}, next}
+                end
+
+              {:error, reason} ->
+                {:error, {:send_accounting, reason}, data}
+            end
+        end
     end
   end
 
@@ -381,11 +393,15 @@ defmodule QUIC.Connection do
   defp retry_packets(scheduler, [], effects), do: {:ok, scheduler, effects}
 
   defp retry_packets(scheduler, [{space, number} | rest], effects) do
-    case HandshakeScheduler.retry_crypto(scheduler, space, number) do
-      {:ok, next, sends} -> retry_packets(next, rest, effects ++ sends)
-      {:error, :not_retransmittable} -> retry_packets(scheduler, rest, effects)
-      {:error, reason} -> {:error, reason}
-      {:error, reason, _} -> {:error, reason}
+    if HandshakeScheduler.retired?(scheduler, space) do
+      retry_packets(scheduler, rest, effects)
+    else
+      case HandshakeScheduler.retry_crypto(scheduler, space, number) do
+        {:ok, next, sends} -> retry_packets(next, rest, effects ++ sends)
+        {:error, :not_retransmittable} -> retry_packets(scheduler, rest, effects)
+        {:error, reason} -> {:error, reason}
+        {:error, reason, _} -> {:error, reason}
+      end
     end
   end
 
@@ -400,8 +416,6 @@ defmodule QUIC.Connection do
 
   defp initial_packet?(<<first, _::binary>>), do: Bitwise.band(first, 0xF0) == 0xC0
   defp initial_packet?(_), do: false
-  defp handshake_packet?(<<first, _::binary>>), do: Bitwise.band(first, 0xF0) == 0xE0
-  defp handshake_packet?(_), do: false
 
   defp expired?(data), do: not data.ready and data.adapter.monotonic_time() >= data.deadline
   defp reply(from, result), do: {:keep_state_and_data, [{:reply, from, result}]}

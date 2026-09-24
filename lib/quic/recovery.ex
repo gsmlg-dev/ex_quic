@@ -29,7 +29,8 @@ defmodule QUIC.Recovery do
 
   defmodule Space do
     @moduledoc false
-    defstruct next: 0,
+    defstruct retired: false,
+              next: 0,
               largest_received: -1,
               largest_acked: -1,
               ack_ranges: [],
@@ -77,21 +78,26 @@ defmodule QUIC.Recovery do
       when space in @spaces and is_map(metadata) and is_integer(bytes) and bytes >= 0 do
     s = state.spaces[space]
 
-    if map_size(s.sent) >= state.max_sent_packets do
-      {:error, :sent_history_limit}
-    else
-      with {:ok, congestion} <- NewReno.reserve(state.congestion, bytes) do
-        packet = %Packet{
-          number: s.next,
-          space: space,
-          status: :reserved,
-          bytes: bytes,
-          metadata: metadata
-        }
+    cond do
+      s.retired ->
+        {:error, :retired_space}
 
-        state = %{state | congestion: congestion}
-        {:ok, put_packet(state, space, packet, %{s | next: s.next + 1}), packet}
-      end
+      map_size(s.sent) >= state.max_sent_packets ->
+        {:error, :sent_history_limit}
+
+      true ->
+        with {:ok, congestion} <- NewReno.reserve(state.congestion, bytes) do
+          packet = %Packet{
+            number: s.next,
+            space: space,
+            status: :reserved,
+            bytes: bytes,
+            metadata: metadata
+          }
+
+          state = %{state | congestion: congestion}
+          {:ok, put_packet(state, space, packet, %{s | next: s.next + 1}), packet}
+        end
     end
   end
 
@@ -105,6 +111,24 @@ defmodule QUIC.Recovery do
 
   @spec local_send(t(), atom(), non_neg_integer(), :ok | {:error, term()}, integer()) ::
           {:ok, t(), [atom()]} | {:error, atom()}
+  def local_send(
+        %{spaces: %{initial: %{retired: true}}} = state,
+        :initial,
+        _number,
+        _result,
+        _at
+      ),
+      do: {:ok, state, [:retired]}
+
+  def local_send(
+        %{spaces: %{handshake: %{retired: true}}} = state,
+        :handshake,
+        _number,
+        _result,
+        _at
+      ),
+      do: {:ok, state, [:retired]}
+
   def local_send(state, space, number, :ok, at) when is_integer(at) do
     with {:ok, packet} <- fetch_packet(state, space, number),
          true <- packet.status in [:reserved, :queued] do
@@ -145,6 +169,12 @@ defmodule QUIC.Recovery do
   end
 
   @spec receive_ack(t(), atom(), map(), integer()) :: {:ok, t(), map()} | {:error, atom()}
+  def receive_ack(%{spaces: %{initial: %{retired: true}}}, :initial, _ack, _at),
+    do: {:error, :retired_space}
+
+  def receive_ack(%{spaces: %{handshake: %{retired: true}}}, :handshake, _ack, _at),
+    do: {:error, :retired_space}
+
   def receive_ack(state, space, ack, at)
       when space in @spaces and is_map(ack) and is_integer(at) do
     with {:ok, ranges} <-
@@ -164,6 +194,12 @@ defmodule QUIC.Recovery do
 
   @doc "Record an authenticated packet number received in a packet-number space."
   @spec note_received(t(), atom(), non_neg_integer()) :: {:ok, t()} | {:error, atom()}
+  def note_received(%{spaces: %{initial: %{retired: true}}}, :initial, _number),
+    do: {:error, :retired_space}
+
+  def note_received(%{spaces: %{handshake: %{retired: true}}}, :handshake, _number),
+    do: {:error, :retired_space}
+
   def note_received(state, space, number)
       when space in @spaces and is_integer(number) and number >= 0 do
     current = state.spaces[space]
@@ -212,6 +248,30 @@ defmodule QUIC.Recovery do
         congestion: NewReno.release(state.congestion, released),
         rtt: %{state.rtt | pto_count: 0}
     })
+  end
+
+  @doc "Permanently retire Initial/Handshake recovery, preserving the next packet number."
+  @spec retire_space(t(), :initial | :handshake) :: t()
+  def retire_space(state, space) when space in [:initial, :handshake] do
+    current = state.spaces[space]
+
+    if current.retired do
+      state
+    else
+      released =
+        Enum.reduce(current.sent, 0, fn {_number, packet}, acc ->
+          if packet.status in [:reserved, :queued, :sent], do: acc + packet.bytes, else: acc
+        end)
+
+      next = %Space{next: current.next, retired: true}
+
+      arm(%{
+        state
+        | spaces: Map.put(state.spaces, space, next),
+          congestion: NewReno.release(state.congestion, released),
+          rtt: %{state.rtt | pto_count: 0}
+      })
+    end
   end
 
   @doc "Recompute the next deadline from actual sent packets, without advancing time."

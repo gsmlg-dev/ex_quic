@@ -76,6 +76,7 @@ defmodule QUIC.TLSDriver do
     current = receive_level(state)
 
     cond do
+      state.levels[level].retired -> {:ok, state, []}
       current == nil -> {:error, terminal_error(), state, []}
       order(level) < order(current) -> old_level(state, level, offset, bytes)
       true -> ingest_current(state, level, offset, bytes, current)
@@ -92,13 +93,47 @@ defmodule QUIC.TLSDriver do
   def retransmit(%__MODULE__{} = state, level, offset, length)
       when level in @levels and is_integer(offset) and offset >= 0 and is_integer(length) and
              length >= 0 do
-    emissions = state.levels[level].sent
+    if state.levels[level].retired do
+      {:error, :retired_level}
+    else
+      emissions = state.levels[level].sent
 
-    case Enum.find(emissions, fn %Emission{offset: start, bytes: bytes} ->
-           offset >= start and offset + length <= start + byte_size(bytes)
-         end) do
-      %Emission{offset: start, bytes: bytes} -> {:ok, binary_part(bytes, offset - start, length)}
-      nil -> {:error, :unknown_crypto_range}
+      case Enum.find(emissions, fn %Emission{offset: start, bytes: bytes} ->
+             offset >= start and offset + length <= start + byte_size(bytes)
+           end) do
+        %Emission{offset: start, bytes: bytes} ->
+          {:ok, binary_part(bytes, offset - start, length)}
+
+        nil ->
+          {:error, :unknown_crypto_range}
+      end
+    end
+  end
+
+  @doc "Release QUIC-owned CRYPTO buffers without changing the provider's private state."
+  @spec retire_level(t(), :initial | :handshake) :: t()
+  def retire_level(state, level) when level in [:initial, :handshake] do
+    current = state.levels[level]
+
+    if current.retired do
+      state
+    else
+      bytes = Enum.reduce(current.sent, 0, &(byte_size(&1.bytes) + &2))
+
+      next = %{
+        current
+        | retired: true,
+          pending: <<>>,
+          sent: [],
+          recv: %{current.recv | intervals: [], buffered_bytes: 0}
+      }
+
+      %{
+        state
+        | levels: Map.put(state.levels, level, next),
+          emitted_bytes: state.emitted_bytes - bytes,
+          future_bytes: state.future_bytes - byte_size(current.pending)
+      }
     end
   end
 
@@ -116,7 +151,14 @@ defmodule QUIC.TLSDriver do
   defp base(role, adapter, tls, limits, max_future_bytes, max_emitted_bytes) do
     levels =
       Map.new(@levels, fn level ->
-        {level, %{recv: CryptoReassembly.new(limits), pending: <<>>, sent: [], next_send: 0}}
+        {level,
+         %{
+           retired: false,
+           recv: CryptoReassembly.new(limits),
+           pending: <<>>,
+           sent: [],
+           next_send: 0
+         }}
       end)
 
     %__MODULE__{
@@ -192,7 +234,8 @@ defmodule QUIC.TLSDriver do
   defp drain_pending(state) do
     current = receive_level(state)
 
-    if current in @levels and state.levels[current].pending != <<>> do
+    if current in @levels and not state.levels[current].retired and
+         state.levels[current].pending != <<>> do
       bytes = state.levels[current].pending
       state = put_in(state.levels[current].pending, <<>>)
       state = %{state | future_bytes: state.future_bytes - byte_size(bytes)}
@@ -227,28 +270,33 @@ defmodule QUIC.TLSDriver do
     Enum.reduce_while(actions, {:ok, state, []}, fn action, {:ok, current, effects} ->
       case action do
         {:emit, level, bytes} when level in @levels and is_binary(bytes) ->
-          if current.emitted_bytes + byte_size(bytes) > current.max_emitted_bytes do
-            {:halt, {:error, %{kind: :quic, reason: :tls_output_limit}, current, effects}}
-          else
-            emission = %Emission{
-              level: level,
-              offset: current.levels[level].next_send,
-              bytes: bytes
-            }
+          cond do
+            current.levels[level].retired ->
+              {:halt, {:error, %{kind: :quic, reason: :retired_level}, current, effects}}
 
-            level_state = current.levels[level]
+            current.emitted_bytes + byte_size(bytes) > current.max_emitted_bytes ->
+              {:halt, {:error, %{kind: :quic, reason: :tls_output_limit}, current, effects}}
 
-            next_level = %{
-              level_state
-              | next_send: emission.offset + byte_size(bytes),
-                sent: level_state.sent ++ [emission]
-            }
+            true ->
+              emission = %Emission{
+                level: level,
+                offset: current.levels[level].next_send,
+                bytes: bytes
+              }
 
-            next = put_in(current.levels[level], next_level)
+              level_state = current.levels[level]
 
-            {:cont,
-             {:ok, %{next | emitted_bytes: current.emitted_bytes + byte_size(bytes)},
-              effects ++ [action]}}
+              next_level = %{
+                level_state
+                | next_send: emission.offset + byte_size(bytes),
+                  sent: level_state.sent ++ [emission]
+              }
+
+              next = put_in(current.levels[level], next_level)
+
+              {:cont,
+               {:ok, %{next | emitted_bytes: current.emitted_bytes + byte_size(bytes)},
+                effects ++ [action]}}
           end
 
         :handshake_complete ->

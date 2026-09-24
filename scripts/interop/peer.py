@@ -14,7 +14,9 @@ import time
 
 import aioquic
 from aioquic.buffer import Buffer
-from aioquic.quic.packet import pull_quic_header, QuicPacketType
+from aioquic.quic.packet import pull_quic_header, pull_ack_frame, QuicPacketType
+from aioquic.tls import Epoch
+from aioquic.quic.crypto import CryptoError, KeyUnavailableError
 from aioquic.asyncio.client import connect
 from aioquic.asyncio.protocol import QuicConnectionProtocol
 from aioquic.asyncio.server import QuicServer
@@ -31,6 +33,7 @@ class Capture:
         self.file = open(path, "w")
         self.mode, self.scenario = mode, scenario
         self.applied = False
+        self.connections = []
         self.held = None
         self.hold_timer = None
 
@@ -58,7 +61,10 @@ class Capture:
             pass
         initial = sender == "client" and any(t == QuicPacketType.INITIAL for t, _ in packets)
         handshake = sender == "server" and any(t == QuicPacketType.HANDSHAKE for t, _ in packets)
-        target = initial if self.scenario == "drop_initial" else handshake
+        if self.scenario == "drop_handshake_done":
+            target = sender == "server" and self.handshake_done(data, direction)
+        else:
+            target = initial if self.scenario == "drop_initial" else handshake
         if not self.applied and target and self.scenario != "baseline":
             self.applied = True
             action = self.scenario
@@ -68,7 +74,7 @@ class Capture:
                 return
             emit(event="impairment", action=action, direction=direction,
                  packet_types=[t.name for t, _ in packets])
-            if action in ("drop_initial", "drop_handshake"):
+            if action in ("drop_initial", "drop_handshake", "drop_handshake_done"):
                 return
             if action == "duplicate":
                 self.output(direction, data, addr, deliver)
@@ -76,6 +82,49 @@ class Capture:
                 end = next(end for t, end in packets if t == QuicPacketType.HANDSHAKE)
                 data = data[:end-1] + bytes([data[end-1] ^ 1]) + data[end:]
         self.output(direction, data, addr, deliver)
+
+    def handshake_done(self, data, direction):
+        # Test-only inspection through the pinned independent peer. Decrypt is
+        # read-only; do not log keys or plaintext and do not feed a dropped packet.
+        for connection in self.connections:
+            try:
+                buf = Buffer(data=data)
+                while not buf.eof():
+                    start = buf.tell()
+                    header = pull_quic_header(buf, host_cid_length=8)
+                    end = start + header.packet_length
+                    if header.packet_type == QuicPacketType.ONE_RTT:
+                        pair = connection._cryptos[Epoch.ONE_RTT]
+                        crypto = pair.send if direction == "send" else pair.recv
+                        expected = (connection._packet_number if direction == "send" else
+                                    connection._spaces[Epoch.ONE_RTT].expected_packet_number)
+                        _, payload, _, changed = crypto.decrypt_packet(data[start:end], buf.tell()-start, expected)
+                        if changed:
+                            return False
+                        frames = Buffer(data=payload)
+                        while not frames.eof():
+                            kind = frames.pull_uint_var()
+                            if kind == 0x1E:
+                                return True
+                            if kind in (0, 1):
+                                continue
+                            if kind in (2, 3):
+                                pull_ack_frame(frames)
+                                if kind == 3:
+                                    for _ in range(3):
+                                        frames.pull_uint_var()
+                            elif kind == 0x18:
+                                frames.pull_uint_var()
+                                frames.pull_uint_var()
+                                frames.pull_bytes(frames.pull_uint8() + 16)
+                            elif kind == 0x19:
+                                frames.pull_uint_var()
+                            else:
+                                break
+                    buf.seek(end)
+            except (ValueError, CryptoError, KeyUnavailableError):
+                continue
+        return False
 
     def output(self, direction, data, addr, deliver):
         self.packet("wire_send" if direction == "send" else "protocol_receive", data, addr)
@@ -108,18 +157,27 @@ class Transport:
 
 
 class Peer(QuicConnectionProtocol):
-    def __init__(self, *args, capture=None, **kwargs):
+    def __init__(self, *args, capture=None, inspection=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.capture = capture
+        self.confirmation_reported = False
+        if inspection or capture:
+            (inspection or capture).connections.append(self._quic)
 
     def connection_made(self, transport):
         super().connection_made(Transport(transport, self.capture) if self.capture else transport)
 
     def datagram_received(self, data, addr):
         if self.capture:
-            self.capture.route("receive", data, addr, super().datagram_received)
+            self.capture.route("receive", data, addr, self.receive_delivered)
         else:
-            super().datagram_received(data, addr)
+            self.receive_delivered(data, addr)
+
+    def receive_delivered(self, data, addr):
+        super().datagram_received(data, addr)
+        if self._quic._handshake_confirmed and not self.confirmation_reported:
+            self.confirmation_reported = True
+            emit(event="quic_confirmed")
 
     def quic_event_received(self, event):
         if isinstance(event, HandshakeCompleted):
@@ -152,7 +210,7 @@ async def main(args):
     if args.mode == "server":
         config.load_cert_chain(args.cert, args.key)
         transport, server = await loop.create_datagram_endpoint(
-            lambda: Server(configuration=config, create_protocol=Peer,
+            lambda: Server(configuration=config, create_protocol=lambda *a, **kw: Peer(*a, inspection=capture, **kw),
                            retry=args.retry, capture=capture),
             local_addr=("127.0.0.1", args.port))
         emit(event="listening", port=transport.get_extra_info("sockname")[1])
@@ -180,7 +238,7 @@ if __name__ == "__main__":
     parser.add_argument("--hostname", default="example.test")
     parser.add_argument("--alpn", default="ex-quic-test")
     parser.add_argument("--retry", action="store_true")
-    parser.add_argument("--scenario", default="baseline", choices=["baseline", "drop_initial", "drop_handshake", "reorder", "duplicate", "corrupt"])
+    parser.add_argument("--scenario", default="baseline", choices=["baseline", "drop_initial", "drop_handshake", "reorder", "duplicate", "corrupt", "drop_handshake_done"])
     parser.add_argument("--timeout", type=int, default=15)
     parser.add_argument("--capture", required=True)
     asyncio.run(main(parser.parse_args()))

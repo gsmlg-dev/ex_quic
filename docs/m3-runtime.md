@@ -53,7 +53,9 @@ This document records the earlier local-runtime increment. The subsequent
 Retry, deterministic loss/reordering/duplication/corruption and certificate/ALPN
 rejection. These bounded scenarios do not complete the wider M3/M6 lifecycle gates.
 
-Before broader endpoint acceptance, also review key retirement, strict packet
+Initial/Handshake key and buffer retirement is implemented and independently
+regressed; see [retirement evidence](m3-key-retirement.md).
+Before broader endpoint acceptance, also review strict packet
 header/CID and frame legality, large CRYPTO flight fragmentation, congestion-full
 PTO behavior, recovery edge cases, established idle/closing/draining lifetime,
 and sent-history reclamation. Current bounded resource limits can terminate a
