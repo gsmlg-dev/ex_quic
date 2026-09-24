@@ -41,7 +41,7 @@ client_tls = [
     num_listeners: 1,
     transport_options: [ip: {127, 0, 0, 1}],
     datagram_dispatcher: QUIC.AbyssDispatcher,
-    dispatcher_options: [tls: server_tls]
+    dispatcher_options: [tls: server_tls, streams: [delivery: :immediate], stream_observer: self()]
   )
 
 pool = Abyss.Server.listener_pool_pid(server)
@@ -91,6 +91,41 @@ end
 
 second_survives = wait_until.(wait_until, fn -> established?.(client_two) end, deadline)
 
+{stream_one, stream_two, stream_result} =
+  if second_survives == :ok do
+    [%{pid: client_pid}] = QUIC.Endpoint.connections(client_two)
+    {:ok, stream_one} = QUIC.Connection.open_stream(client_pid, :bidi)
+    {:ok, stream_two} = QUIC.Connection.open_stream(client_pid, :bidi)
+    :ok = QUIC.Connection.send_stream(client_pid, stream_one, "stream-one", true)
+    :ok = QUIC.Connection.send_stream(client_pid, stream_two, "stream-two", true)
+
+    collect_streams = fn collect_streams, deadline, seen ->
+      receive do
+        {:quic_stream, _pid, stream_id, events} when stream_id in [stream_one, stream_two] ->
+          next = Map.put(seen, stream_id, events)
+          if map_size(next) == 2, do: next, else: collect_streams.(collect_streams, deadline, next)
+      after
+        20 ->
+          if System.monotonic_time(:millisecond) >= deadline,
+            do: seen,
+            else: collect_streams.(collect_streams, deadline, seen)
+      end
+    end
+
+    {stream_one, stream_two, collect_streams.(collect_streams, deadline, %{})}
+  else
+    {nil, nil, %{}}
+  end
+
+stream_ok =
+  is_integer(stream_one) and is_integer(stream_two) and
+    Enum.all?([{stream_one, "stream-one"}, {stream_two, "stream-two"}], fn {stream_id, expected} ->
+      case Map.get(stream_result, stream_id) do
+        [{:data, ^stream_id, ^expected}, {:fin, ^stream_id}] -> true
+        _ -> false
+      end
+    end)
+
 :ok = Abyss.suspend(server)
 :ok = Abyss.resume(server)
 pool = Abyss.Server.listener_pool_pid(server)
@@ -103,11 +138,12 @@ pool = Abyss.Server.listener_pool_pid(server)
 third_ready = wait_until.(wait_until, fn -> established?.(client_three) end, deadline)
 
 result =
-  if first_pair == :ok and second_survives == :ok and third_ready == :ok,
+if first_pair == :ok and second_survives == :ok and third_ready == :ok and stream_ok,
     do: :ok,
     else:
-      {:error,
-       %{first_pair: first_pair, second_survives: second_survives, third_ready: third_ready}}
+     {:error,
+       %{first_pair: first_pair, second_survives: second_survives, third_ready: third_ready,
+         stream_result: stream_result}}
 
 IO.inspect(%{result: result, address: address, restarted_address: restarted_address},
   label: "M5_ABYSS_RESULT"

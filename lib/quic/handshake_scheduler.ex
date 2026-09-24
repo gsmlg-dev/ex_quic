@@ -936,6 +936,7 @@ defmodule QUIC.HandshakeScheduler do
       :max_packet_size,
       :min_initial_size,
       :max_queue,
+      :streams,
       :initial_read_keys
     ])
   end

@@ -52,6 +52,7 @@ defmodule QUIC.Endpoint do
           local: io.local,
           external: io.external,
           opts: opts,
+          stream_observer: Keyword.get(opts, :stream_observer),
           max: max,
           routes: %{},
           provisional: %{},
@@ -151,6 +152,21 @@ defmodule QUIC.Endpoint do
   end
 
   def handle_info({:quic_udp_error, _, _}, data), do: {:stop, :normal, data}
+
+  def handle_info({:quic_stream, pid, stream_id, events}, data) do
+    if is_pid(data.stream_observer),
+      do: send(data.stream_observer, {:quic_stream, pid, stream_id, events})
+
+    {:noreply, data}
+  end
+
+  def handle_info({:quic_stream_reset, pid, stream_id, events}, data) do
+    if is_pid(data.stream_observer),
+      do: send(data.stream_observer, {:quic_stream_reset, pid, stream_id, events})
+
+    {:noreply, data}
+  end
+
   def handle_info(_, data), do: {:noreply, data}
 
   defp route(data, remote, bytes, at) do
@@ -263,7 +279,8 @@ defmodule QUIC.Endpoint do
                scid: scid,
                original_dcid: original_dcid,
                initial_key_dcid: retry_scid || original_dcid,
-               retry_scid: retry_scid
+               retry_scid: retry_scid,
+               streams: Keyword.get(data.opts, :streams, [])
              ] ++ tls
          ],
          {:ok, pid} <- Connection.start(opts),
