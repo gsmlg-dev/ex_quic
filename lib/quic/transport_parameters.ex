@@ -314,7 +314,8 @@ defmodule QUIC.TransportParameters do
 
   defp compare_cid(_values, _key, nil), do: :ok
 
-  defp compare_cid(values, key, expected) when is_binary(expected) do
+  defp compare_cid(values, key, expected)
+       when is_binary(expected) and byte_size(expected) <= @max_cid_length do
     if Map.get(values, key) == expected, do: :ok, else: {:error, :connection_id_mismatch}
   end
 

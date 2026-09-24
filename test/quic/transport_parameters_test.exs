@@ -100,4 +100,20 @@ defmodule QUIC.TransportParametersTest do
     assert {:error, :missing_initial_source_connection_id} =
              TransportParameters.encode([], role: :client)
   end
+
+  test "rejects malformed expected connection-id bindings" do
+    parameters = [%{id: 0x0F, value: <<1>>}]
+
+    assert {:error, :invalid_connection_id} =
+             TransportParameters.validate(parameters,
+               role: :client,
+               initial_source_connection_id: :binary.copy(<<1>>, 21)
+             )
+
+    assert {:error, :invalid_connection_id} =
+             TransportParameters.validate(parameters,
+               role: :client,
+               initial_source_connection_id: :not_a_binary
+             )
+  end
 end

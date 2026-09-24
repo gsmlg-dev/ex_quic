@@ -59,6 +59,30 @@ defmodule QUIC.CodecTest do
     <<first, _version::32, rest::binary>> = packet
     unknown = <<first, 2::32, rest::binary>>
     assert {:error, :unsupported_version} = QUIC.Codec.parse_initial(unknown)
+
+    <<first, version::32, rest::binary>> = packet
+
+    assert {:error, :invalid_header_fixed_bit} =
+             QUIC.Codec.parse_initial(<<Bitwise.band(first, 0xBF), version::32, rest::binary>>)
+  end
+
+  test "Initial parser rejects non-Initial packet types and impossible CID lengths" do
+    fields = %{
+      dcid: <<1>>,
+      scid: <<2>>,
+      packet_number: 0,
+      packet_number_length: 1,
+      payload: <<0>>
+    }
+
+    assert {:ok, packet} = QUIC.Codec.build_initial(fields)
+    <<_first, version::32, rest::binary>> = packet
+
+    assert {:error, :not_initial} =
+             QUIC.Codec.parse_initial(<<0xD0, version::32, rest::binary>>)
+
+    assert {:error, :invalid_connection_id} =
+             QUIC.Codec.parse_initial(<<0xC0, version::32, 21, 0::168>>)
   end
 
   test "coalesced datagram boundaries are length bounded" do

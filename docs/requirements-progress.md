@@ -10,6 +10,7 @@ This record tracks incremental work against `docs/implement-plan.md`; intermedia
 | TLS public contract checks | `test/ex_ssl_contract_test.exs`; real both-role UDP certificate tests in `test/quic/endpoint_test.exs` | local tests and independent aioquic both-role handshakes pass |
 | QUIC varints/headers/packet numbers | `QUIC.Codec`, `test/quic/codec_test.exs` | implemented and passing |
 | QUIC Initial protection | `QUIC.Protection`, `test/quic/protection_test.exs` | implemented and passing RFC9001 vector checks |
+| Strict packet/frame validation | `QUIC.Codec.validate_frame_levels/2`, authenticated header/CID checks in `QUIC.HandshakeScheduler`, focused codec/scheduler tests | implemented; 121-test local gate passes; invalid transport-parameter and corrupted-Finished network cases remain pending |
 | Bounded Initial inspector | `QUIC.Inspector`, `test/quic/inspector_test.exs` | partial M2: encrypted fixture, fingerprint event, bounded contexts and passive path implemented |
 | Transport parameters | `QUIC.TransportParameters`, authenticated parameter/CID readiness checks in `QUIC.Connection` | basic v1 semantic validation implemented |
 | UDP runtime | `QUIC.Connection`, `QUIC.Endpoint`, `QUIC.IO.GenUDP`; lifecycle, ACK/PTO, Initial/Handshake loss tests | experimental M3-D runtime; requested M3-E matrix passes |

@@ -266,6 +266,7 @@ defmodule QUIC.HandshakeScheduler do
   defp receive_coalesced(state, bytes, at, events, count) do
     result =
       with {:ok, packet} <- decode_protected_packet(state, bytes),
+           :ok <- validate_packet_frames(packet.plaintext, packet.level),
            {:ok, recovery} <- Recovery.note_received(state.recovery, packet.space, packet.number),
            {:ok, next, generated} <-
              dispatch_inbound(learn_peer_cid(%{state | recovery: recovery}, packet), packet, at) do
@@ -841,6 +842,18 @@ defmodule QUIC.HandshakeScheduler do
     end
   end
 
+  defp validate_packet_frames(plaintext, level) do
+    with {:ok, frames, <<>>} <- Codec.decode_frames(plaintext),
+         :ok <- Codec.validate_frame_levels(frames, level) do
+      :ok
+    else
+      {:ok, _frames, _tail} -> {:error, :trailing_frame_bytes}
+      {:wrong_encryption_level, _, _} = reason -> {:error, reason}
+      {:error, reason} when is_tuple(reason) -> {:error, reason}
+      {:error, reason} -> {:error, {:malformed_frame, reason}}
+    end
+  end
+
   defp dispatch_frames(state, _level, _space, _number, [], _at, events),
     do: {:ok, state, Enum.reverse(events)}
 
@@ -958,7 +971,8 @@ defmodule QUIC.HandshakeScheduler do
              aad,
              ciphertext,
              Map.get(keys, :aead, :aes_128_gcm)
-           ) do
+           ),
+         :ok <- validate_unprotected_header(unprotected, parsed.level) do
       {:ok, Map.merge(parsed, %{number: number, plaintext: plaintext})}
     else
       {:retired, length} -> {:retired, length}
@@ -994,9 +1008,14 @@ defmodule QUIC.HandshakeScheduler do
     dcid_len = byte_size(state.dcid)
     pn_offset = 1 + dcid_len
 
-    if byte_size(packet) < pn_offset + 4 + 16,
-      do: {:error, :truncated_header},
-      else:
+    cond do
+      byte_size(packet) < pn_offset + 4 + 16 ->
+        {:error, :truncated_header}
+
+      (first &&& 0x40) == 0 ->
+        {:error, :invalid_header_fixed_bit}
+
+      true ->
         {:ok,
          %{
            level: :application,
@@ -1004,9 +1023,34 @@ defmodule QUIC.HandshakeScheduler do
            pn_offset: pn_offset,
            packet_length: byte_size(packet)
          }}
+    end
   end
 
   defp parse_protected_header(_, _), do: {:error, :truncated_header}
+
+  defp validate_unprotected_header(<<first, _rest::binary>>, :application) do
+    cond do
+      (first &&& 0x40) == 0 -> {:error, :invalid_header_fixed_bit}
+      (first &&& 0x18) != 0 -> {:error, :invalid_header_reserved_bits}
+      true -> :ok
+    end
+  end
+
+  defp validate_unprotected_header(<<first, _rest::binary>>, level)
+       when level in [:initial, :handshake] do
+    cond do
+      (first &&& 0x80) == 0 or (first &&& 0x40) == 0 ->
+        {:error, :invalid_header_fixed_bit}
+
+      (first &&& 0x0C) != 0 ->
+        {:error, :invalid_header_reserved_bits}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_unprotected_header(_, _), do: {:error, :truncated_header}
 
   defp parse_long_header(state, first, rest, packet) do
     type = first >>> 4 &&& 0x03
@@ -1056,7 +1100,11 @@ defmodule QUIC.HandshakeScheduler do
   defp long_level(_), do: {:error, :unsupported_packet_type}
 
   defp validate_cids(state, dcid, scid) do
-    if dcid == state.scid or dcid == state.dcid or scid == state.scid or scid == state.dcid,
+    valid_destinations =
+      [state.scid, state.dcid, state.original_dcid, state.retry_scid]
+      |> Enum.reject(&is_nil/1)
+
+    if dcid in valid_destinations and byte_size(dcid) <= 20 and byte_size(scid) <= 20,
       do: :ok,
       else: {:error, :wrong_connection_id}
   end

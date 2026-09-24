@@ -59,9 +59,9 @@ production behavior or error gate was weakened to satisfy this check.
 These results cover the requested route, not all endpoint lifecycle behavior.
 Role-specific Initial/Handshake retirement is now covered by
 [the key-retirement increment](m3-key-retirement.md), including all 20 prior
-network scenarios and both-role HANDSHAKE_DONE loss. Remaining work includes
-strict header/CID/frame legality,
-large CRYPTO fragmentation, congestion-full PTO, long-lived sent-history
+network scenarios and both-role HANDSHAKE_DONE loss. Strict header/CID/frame
+legality now has authenticated focused coverage. Remaining work includes large
+CRYPTO fragmentation, congestion-full PTO, long-lived sent-history
 reclamation and idle/closing/draining behavior. Independent invalid-parameter and
 corrupted-Finished scenarios, ChaCha negotiation, HRR-capable second independent
 peer, sustained/burst loss, resource/load limits and the portable CI runtime

@@ -367,6 +367,38 @@ defmodule QUIC.Codec do
   defp decode_frames(<<type, _::binary>>, _acc, _limit), do: {:error, {:unknown_frame, type}}
   defp decode_frames(_, _, _), do: {:error, :malformed_frame}
 
+  @doc "Validate encryption-level constraints that cannot be inferred from frame bytes."
+  @spec validate_frame_levels([map()], :initial | :handshake | :application) ::
+          :ok | {:error, term()}
+  def validate_frame_levels(frames, level)
+      when is_list(frames) and level in [:initial, :handshake, :application] do
+    Enum.reduce_while(frames, :ok, fn
+      %{type: :crypto}, :ok when level in [:initial, :handshake] ->
+        {:cont, :ok}
+
+      %{type: :crypto}, :ok ->
+        {:halt, {:wrong_encryption_level, :crypto, level}}
+
+      %{type: :handshake_done}, :ok when level == :application ->
+        {:cont, :ok}
+
+      %{type: :handshake_done}, :ok ->
+        {:halt, {:wrong_encryption_level, :handshake_done, level}}
+
+      %{type: type}, :ok
+      when type in [:new_connection_id, :retire_connection_id] and level == :application ->
+        {:cont, :ok}
+
+      %{type: type}, :ok when type in [:new_connection_id, :retire_connection_id] ->
+        {:halt, {:wrong_encryption_level, type, level}}
+
+      _, :ok ->
+        {:cont, :ok}
+    end)
+  end
+
+  def validate_frame_levels(_, _), do: {:error, :invalid_frame_level}
+
   defp encode_ack_ranges(largest, ranges) do
     with {:ok, normalized} <- normalize_ack_ranges(largest, ranges),
          [first | rest] <- normalized,
@@ -465,7 +497,11 @@ defmodule QUIC.Codec do
   defp take_cid(_), do: {:error, :invalid_connection_id}
 
   defp validate_initial_first(first)
-       when (first &&& 0x80) != 0 and (first &&& 0x40) != 0 and (first >>> 4 &&& 3) == 0, do: :ok
+       when (first &&& 0x80) != 0 and (first &&& 0x40) != 0 and (first >>> 4 &&& 3) == 0,
+       do: :ok
+
+  defp validate_initial_first(first) when (first &&& 0x40) == 0,
+    do: {:error, :invalid_header_fixed_bit}
 
   defp validate_initial_first(_), do: {:error, :not_initial}
   defp valid_version(@version), do: :ok

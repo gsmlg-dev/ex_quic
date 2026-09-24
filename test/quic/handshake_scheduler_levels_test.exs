@@ -164,6 +164,22 @@ defmodule QUIC.HandshakeSchedulerLevelsTest do
     assert state.recovery.spaces.application.sent[0].status == :sent
   end
 
+  test "authenticated malformed ACK does not update the receive range" do
+    {:ok, state, []} = new()
+    packet = peer_handshake(state.keys.handshake.read, <<2, 4, 0, 0, 5>>)
+
+    assert {:error, {:malformed_frame, :malformed_ack_frame}, ^state} =
+             HandshakeScheduler.receive_datagram(state, packet, 10)
+  end
+
+  test "authenticated frames are rejected outside their encryption level" do
+    {:ok, state, []} = new()
+    packet = peer_handshake(state.keys.handshake.read, <<0x18, 0, 0, 1, 9, 1::128>>)
+
+    assert {:error, {:wrong_encryption_level, :new_connection_id, :handshake}, ^state} =
+             HandshakeScheduler.receive_datagram(state, packet, 10)
+  end
+
   test "authenticated Handshake padding and transport close decode independently" do
     {:ok, state, []} = new()
     packet = peer_handshake(state.keys.handshake.read, <<0, 0x1C, 0, 0, 0>>)
