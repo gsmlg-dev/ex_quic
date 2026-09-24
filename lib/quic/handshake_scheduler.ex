@@ -297,6 +297,28 @@ defmodule QUIC.HandshakeScheduler do
     end
   end
 
+  defp build_protected(state, level, offset, bytes, keys)
+       when level in [:handshake, :application] and is_map(keys) do
+    write_keys = Map.get(keys, :write)
+
+    if is_map(write_keys) do
+      ack_frames = Map.get(state.pending_acks, level, [])
+      crypto = %{type: :crypto, offset: offset, data: bytes}
+
+      with {:ok, ack_bytes} <- Codec.encode_frames(ack_frames),
+           {:ok, crypto_bytes} <-
+             if(bytes == <<>>, do: {:ok, <<>>}, else: Codec.encode_frames([crypto])),
+           plaintext <- crypto_bytes <> ack_bytes,
+           pn <- state.recovery.spaces[level].next,
+           pn_len <- packet_number_length(pn),
+           {:ok, packet} <- encrypt_protected(state, level, write_keys, pn, pn_len, plaintext) do
+        {:ok, packet}
+      end
+    else
+      {:error, {:missing_write_key, level}}
+    end
+  end
+
   defp build_protected(_state, level, _offset, _bytes, _keys),
     do: {:error, {:unsupported_level, level}}
 
@@ -326,6 +348,67 @@ defmodule QUIC.HandshakeScheduler do
          <<first, prefix::binary-size(^prefix_size), pn_wire::binary-size(^pn_len), tail::binary>> <-
            packet do
       masked_first = bxor(first, :binary.at(mask, 0) &&& 0x0F)
+      masked_pn = mask_packet_number(pn_wire, mask, 1)
+      {:ok, <<masked_first, prefix::binary, masked_pn::binary, tail::binary>>}
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :protection_failed}
+    end
+  end
+
+  defp encrypt_protected(state, :handshake, keys, pn, pn_len, plaintext) do
+    encrypt_long(state, keys, 2, pn, pn_len, plaintext)
+  end
+
+  defp encrypt_protected(state, :application, keys, pn, pn_len, plaintext) do
+    encrypt_short(state, keys, pn, pn_len, plaintext)
+  end
+
+  defp encrypt_long(state, keys, packet_type, pn, pn_len, plaintext) do
+    dummy_cipher = <<0::size((byte_size(plaintext) + 16) * 8)>>
+
+    with {:ok, length} <- Codec.encode_varint(byte_size(dummy_cipher) + pn_len),
+         header <-
+           <<0xC0 ||| packet_type <<< 4 ||| pn_len - 1, 1::32, byte_size(state.dcid),
+             state.dcid::binary, byte_size(state.scid), state.scid::binary, length::binary>>,
+         aad <- header <> <<pn::unsigned-big-integer-size(pn_len * 8)>>,
+         {:ok, ciphertext} <- Protection.aead_encrypt(keys.key, keys.iv, pn, aad, plaintext),
+         packet <- aad <> ciphertext,
+         pn_offset <- byte_size(header),
+         {:ok, mask} <-
+           Protection.header_protection_mask(
+             keys.hp,
+             binary_part(packet, pn_offset + 4, 16),
+             keys.hp_algorithm
+           ),
+         prefix_size <- byte_size(header) - 1,
+         <<first, prefix::binary-size(^prefix_size), pn_wire::binary-size(^pn_len), tail::binary>> <-
+           packet do
+      masked_first = bxor(first, :binary.at(mask, 0) &&& 0x0F)
+      masked_pn = mask_packet_number(pn_wire, mask, 1)
+      {:ok, <<masked_first, prefix::binary, masked_pn::binary, tail::binary>>}
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :protection_failed}
+    end
+  end
+
+  defp encrypt_short(state, keys, pn, pn_len, plaintext) do
+    with header <- <<0x40 ||| pn_len - 1, state.dcid::binary>>,
+         aad <- header <> <<pn::unsigned-big-integer-size(pn_len * 8)>>,
+         {:ok, ciphertext} <- Protection.aead_encrypt(keys.key, keys.iv, pn, aad, plaintext),
+         packet <- aad <> ciphertext,
+         pn_offset <- byte_size(header),
+         {:ok, mask} <-
+           Protection.header_protection_mask(
+             keys.hp,
+             binary_part(packet, pn_offset + 4, 16),
+             keys.hp_algorithm
+           ),
+         prefix_size <- byte_size(header) - 1,
+         <<first, prefix::binary-size(^prefix_size), pn_wire::binary-size(^pn_len), tail::binary>> <-
+           packet do
+      masked_first = bxor(first, :binary.at(mask, 0) &&& 0x1F)
       masked_pn = mask_packet_number(pn_wire, mask, 1)
       {:ok, <<masked_first, prefix::binary, masked_pn::binary, tail::binary>>}
     else
