@@ -71,14 +71,14 @@ header/CID and frame legality, congestion-full PTO behavior and recovery edge
 cases. Deterministic idle/closing/draining coverage is present, but independent
 lifecycle network validation remains pending. Current bounded resource limits can
 terminate a connection rather than silently extend unsupported behavior. Independent
-multi-stream transfer, profile fidelity, path migration and Abyss integration
-path migration and Abyss integration are not part of this runtime increment.
+multi-stream transfer, profile wire fidelity, path migration and Abyss integration
+are not part of this runtime increment.
 
 ## Local validation record
 
 2026-09-24, macOS, Elixir 1.20.1 / Erlang OTP 29 (ERTS 17.0.2):
 `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mix test`
-(133 tests, seed 532696), and `git diff --check` exited 0. Focused stream,
-codec and scheduler tests (27 tests) also exited 0.
+(138 tests, seed 839122), and `git diff --check` exited 0. Focused stream,
+codec, scheduler and profile tests also exited 0.
 Independent-peer tests, CI runtime combinations and packet captures were not run
 for this increment.

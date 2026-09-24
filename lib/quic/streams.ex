@@ -21,7 +21,11 @@ defmodule QUIC.Streams do
             peer_max_stream_data: 65_536,
             peer_max_streams_bidi: 16,
             peer_max_streams_uni: 16,
-            blocked: MapSet.new()
+            blocked: MapSet.new(),
+            delivery: :immediate,
+            ready: %{},
+            ready_bytes: 0,
+            max_ready_bytes: 262_144
 
   defmodule Stream do
     defstruct id: 0,
@@ -55,7 +59,10 @@ defmodule QUIC.Streams do
       peer_max_data: positive(opts, :peer_max_data, 1_048_576),
       peer_max_stream_data: positive(opts, :peer_max_stream_data, 65_536),
       peer_max_streams_bidi: nonnegative(opts, :peer_max_streams_bidi, 16),
-      peer_max_streams_uni: nonnegative(opts, :peer_max_streams_uni, 16)
+      peer_max_streams_uni: nonnegative(opts, :peer_max_streams_uni, 16),
+      delivery: delivery_mode(opts),
+      max_ready_bytes:
+        positive(opts, :max_ready_bytes, Keyword.get(opts, :max_receive_buffer, 262_144))
     }
   end
 
@@ -131,19 +138,33 @@ defmodule QUIC.Streams do
            | recv_final: if(fin, do: offset + byte_size(data), else: stream.recv_final)
          },
          {:ok, stream} <- insert_chunk(stream, offset, data),
-         {:ok, stream, events} <- consume(stream, id) do
-      {:ok,
-       %{
-         state
-         | streams: Map.put(state.streams, id, stream),
-           data_received: state.data_received + emitted_bytes(events)
-       }, events}
+         {:ok, stream, events} <- consume_chunks(stream, id) do
+      next = %{state | streams: Map.put(state.streams, id, stream)}
+
+      case retain_events(next, id, events) do
+        {:ok, next, delivered} ->
+          {:ok, %{next | data_received: next.data_received + emitted_bytes(delivered)}, delivered}
+
+        {:error, _} = error ->
+          error
+      end
     else
       {:error, _} = error -> error
     end
   end
 
   def receive(_, _), do: {:error, :invalid_stream_frame}
+
+  @doc "Consume queued stream events when `delivery: :manual` is configured."
+  def consume(%__MODULE__{delivery: :manual} = state, id, max_bytes)
+      when is_integer(id) and id >= 0 and is_integer(max_bytes) and max_bytes > 0 do
+    {events, rest, bytes} = take_events(Map.get(state.ready, id, []), max_bytes, [], 0)
+
+    ready = if rest == [], do: Map.delete(state.ready, id), else: Map.put(state.ready, id, rest)
+    {:ok, %{state | ready: ready, ready_bytes: state.ready_bytes - bytes}, events}
+  end
+
+  def consume(%__MODULE__{}, _id, _max_bytes), do: {:error, :manual_delivery_disabled}
 
   def reset(%__MODULE__{} = state, id, error_code, final_size)
       when is_integer(error_code) and error_code >= 0 and is_integer(final_size) and
@@ -356,9 +377,9 @@ defmodule QUIC.Streams do
       binary_part(bytes, left - a, right - left) != binary_part(old, left - b, right - left)
   end
 
-  defp consume(stream, id), do: consume(stream, id, [])
+  defp consume_chunks(stream, id), do: consume_chunks(stream, id, [])
 
-  defp consume(stream, id, events) do
+  defp consume_chunks(stream, id, events) do
     case Map.pop(stream.recv_chunks, stream.recv_next) do
       {nil, _} ->
         if is_integer(stream.recv_final) and stream.recv_next == stream.recv_final and
@@ -374,7 +395,7 @@ defmodule QUIC.Streams do
             recv_buffered: stream.recv_buffered - byte_size(data)
         }
 
-        consume(next, id, [{:data, id, data} | events])
+        consume_chunks(next, id, [{:data, id, data} | events])
     end
   end
 
@@ -389,10 +410,42 @@ defmodule QUIC.Streams do
         _, acc -> acc
       end)
 
+  defp retain_events(%{delivery: :immediate} = state, _id, events), do: {:ok, state, events}
+
+  defp retain_events(%{delivery: :manual} = state, id, events) do
+    bytes = emitted_bytes(events)
+
+    if state.ready_bytes + bytes > state.max_ready_bytes do
+      {:error, :receive_queue_limit}
+    else
+      ready = Map.update(state.ready, id, events, &(&1 ++ events))
+      {:ok, %{state | ready: ready, ready_bytes: state.ready_bytes + bytes}, []}
+    end
+  end
+
+  defp take_events([], _limit, acc, bytes), do: {Enum.reverse(acc), [], bytes}
+
+  defp take_events([event | rest], limit, acc, bytes) do
+    event_bytes = emitted_bytes([event])
+
+    if event_bytes > 0 and bytes + event_bytes > limit do
+      {Enum.reverse(acc), [event | rest], bytes}
+    else
+      take_events(rest, limit, [event | acc], bytes + event_bytes)
+    end
+  end
+
   defp role_bit(:client), do: 0
   defp role_bit(:server), do: 1
   defp blocked_frame(:bidi, count), do: %{type: :streams_blocked_bidi, value: count}
   defp blocked_frame(:uni, count), do: %{type: :streams_blocked_uni, value: count}
   defp positive(opts, key, default), do: max(1, Keyword.get(opts, key, default))
   defp nonnegative(opts, key, default), do: max(0, Keyword.get(opts, key, default))
+
+  defp delivery_mode(opts) do
+    case Keyword.get(opts, :delivery, :immediate) do
+      mode when mode in [:immediate, :manual] -> mode
+      _ -> :immediate
+    end
+  end
 end

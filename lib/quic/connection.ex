@@ -28,8 +28,17 @@ defmodule QUIC.Connection do
   def close(pid), do: :gen_statem.call(pid, :close)
 
   @doc "Admit bounded application bytes to a connection-owned stream."
-  def send_stream(pid, stream_id, data, fin \\ false),
-    do: :gen_statem.call(pid, {:stream_send, stream_id, data, fin})
+  def send_stream(pid, stream_id, data, fin \\ false, timeout \\ 5_000) do
+    try do
+      :gen_statem.call(pid, {:stream_send, stream_id, data, fin}, timeout)
+    catch
+      :exit, {:timeout, _} -> {:error, :admission_timeout}
+    end
+  end
+
+  @doc "Consume at most `max_bytes` from a manually delivered stream queue."
+  def consume_stream(pid, stream_id, max_bytes, timeout \\ 5_000),
+    do: :gen_statem.call(pid, {:stream_consume, stream_id, max_bytes}, timeout)
 
   def deliver(pid, generation, bytes, received_at),
     do: :gen_statem.call(pid, {:datagram, generation, bytes, received_at})
@@ -172,6 +181,20 @@ defmodule QUIC.Connection do
   end
 
   def handle_event({:call, from}, {:stream_send, _stream_id, _bytes, _fin}, _phase, _data),
+    do: reply(from, {:error, :not_established})
+
+  def handle_event({:call, from}, {:stream_consume, stream_id, max_bytes}, :established, data)
+      when is_integer(stream_id) and is_integer(max_bytes) and max_bytes > 0 do
+    case HandshakeScheduler.consume_stream(data.scheduler, stream_id, max_bytes) do
+      {:ok, scheduler, events} ->
+        advance(%{data | scheduler: scheduler}, [], [{:reply, from, {:ok, events}}])
+
+      {:error, reason} ->
+        reply(from, {:error, reason})
+    end
+  end
+
+  def handle_event({:call, from}, {:stream_consume, _stream_id, _max_bytes}, _phase, _data),
     do: reply(from, {:error, :not_established})
 
   def handle_event(

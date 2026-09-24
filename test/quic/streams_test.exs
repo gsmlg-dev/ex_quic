@@ -71,4 +71,38 @@ defmodule QUIC.StreamsTest do
     assert {:ok, _state, %{type: :stop_sending, stream_id: 0, error_code: 10}} =
              Streams.stop_sending(state, 0, 10)
   end
+
+  test "manual delivery keeps a bounded ready queue until consumption" do
+    state = Streams.new(:client, delivery: :manual, max_ready_bytes: 3)
+
+    assert {:ok, state, 0} = Streams.open(state, :bidi)
+
+    assert {:ok, state, []} =
+             Streams.receive(state, %{
+               type: :stream,
+               stream_id: 0,
+               offset: 0,
+               data: "abc",
+               fin: false
+             })
+
+    assert state.ready_bytes == 3
+
+    assert {:error, :receive_queue_limit} =
+             Streams.receive(state, %{
+               type: :stream,
+               stream_id: 0,
+               offset: 3,
+               data: "d",
+               fin: false
+             })
+
+    assert {:ok, state, [{:data, 0, "abc"}]} = Streams.consume(state, 0, 3)
+    assert state.ready_bytes == 0
+  end
+
+  test "invalid manual delivery limits fall back to immediate mode" do
+    state = Streams.new(:client, delivery: :invalid)
+    assert state.delivery == :immediate
+  end
 end

@@ -35,6 +35,8 @@ defmodule QUIC.HandshakeScheduler do
             min_initial_size: 1200,
             max_queue: 64,
             queued: 0,
+            queued_bytes: 0,
+            max_queue_bytes: 1_048_576,
             streams: nil
 
   @type t :: %__MODULE__{}
@@ -73,6 +75,7 @@ defmodule QUIC.HandshakeScheduler do
         max_packet_size: Keyword.get(opts, :max_packet_size, @default_max_packet),
         min_initial_size: Keyword.get(opts, :min_initial_size, 1200),
         max_queue: Keyword.get(opts, :max_queue, 64),
+        max_queue_bytes: Keyword.get(opts, :max_queue_bytes, 1_048_576),
         streams: Streams.new(role, Keyword.get(opts, :streams, []))
       }
 
@@ -126,16 +129,31 @@ defmodule QUIC.HandshakeScheduler do
       state = %{state | streams: next_streams}
       control = Map.get(state.pending_control, :application, []) ++ [frame]
 
-      if length(control) > state.max_queue,
-        do: {:error, :send_queue_limit},
-        else:
+      cond do
+        length(control) > state.max_queue ->
+          {:error, :send_queue_limit}
+
+        state.queued_bytes + byte_size(data) > state.max_queue_bytes ->
+          {:error, :send_queue_bytes_limit}
+
+        true ->
           schedule(%{
             state
-            | pending_control: Map.put(state.pending_control, :application, control)
+            | pending_control: Map.put(state.pending_control, :application, control),
+              queued_bytes: state.queued_bytes + byte_size(data)
           })
+      end
     else
       false -> {:error, :application_unavailable}
       {:blocked, frame} -> {:blocked, frame}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc "Consume queued stream events for a manual-delivery stream policy."
+  def consume_stream(%__MODULE__{streams: streams} = state, id, max_bytes) do
+    case Streams.consume(streams, id, max_bytes) do
+      {:ok, streams, events} -> {:ok, %{state | streams: streams}, events}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -542,6 +560,7 @@ defmodule QUIC.HandshakeScheduler do
     space = level
     key_context = Map.get(state.keys, level)
     control = Map.get(state.pending_control, level, [])
+    control_bytes = control_data_bytes(control)
     ack_eliciting = bytes != <<>> or control != []
 
     with {:ok, packet} <- build_protected(state, level, offset, bytes, key_context),
@@ -571,7 +590,8 @@ defmodule QUIC.HandshakeScheduler do
         state
         | recovery: recovery,
           pending_acks: Map.delete(state.pending_acks, space),
-          pending_control: Map.delete(state.pending_control, space)
+          pending_control: Map.delete(state.pending_control, space),
+          queued_bytes: max(0, state.queued_bytes - control_bytes)
       }
 
       {:ok, next_state,
@@ -579,6 +599,13 @@ defmodule QUIC.HandshakeScheduler do
     else
       {:error, reason} -> {:error, reason, state}
     end
+  end
+
+  defp control_data_bytes(frames) do
+    Enum.reduce(frames, 0, fn
+      %{type: :stream, data: data}, total when is_binary(data) -> total + byte_size(data)
+      _, total -> total
+    end)
   end
 
   defp build_protected(_state, level, _offset, _bytes, nil),
