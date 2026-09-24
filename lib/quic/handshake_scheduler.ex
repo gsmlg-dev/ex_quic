@@ -189,8 +189,11 @@ defmodule QUIC.HandshakeScheduler do
       {%SSL.QUIC.Secret{}, _}, acc ->
         {:cont, acc}
 
-      %SSL.QUIC.Secret{}, acc ->
-        {:cont, acc}
+      %SSL.QUIC.Secret{} = secret, {:ok, state, generated} ->
+        case install_secret(state, secret) do
+          {:ok, state} -> {:cont, {:ok, state, generated}}
+          {:error, reason} -> {:halt, {:error, reason, state}}
+        end
 
       {:handshake_complete, _}, acc ->
         {:cont, acc}
@@ -341,6 +344,42 @@ defmodule QUIC.HandshakeScheduler do
       _ -> {:error, {:missing_or_invalid, key}}
     end
   end
+
+  defp install_secret(state, %SSL.QUIC.Secret{
+         level: level,
+         direction: direction,
+         cipher_suite: cipher_suite,
+         aead: aead,
+         hkdf: hkdf,
+         secret: secret
+       })
+       when level in [:handshake, :application] and direction in [:read, :write] do
+    with {:ok, derived} <- Protection.packet_keys(level, cipher_suite, aead, hkdf, secret) do
+      context = Map.put(derived, :direction, direction)
+      existing = get_in(state.keys, [level, direction])
+
+      cond do
+        is_nil(existing) ->
+          keys =
+            Map.put(
+              state.keys,
+              level,
+              Map.put(Map.get(state.keys, level, %{}), direction, context)
+            )
+
+          {:ok, %{state | keys: keys}}
+
+        existing == context ->
+          {:error, {:duplicate_secret, level, direction}}
+
+        true ->
+          {:error, {:conflicting_secret, level, direction}}
+      end
+    end
+  end
+
+  defp install_secret(_state, %SSL.QUIC.Secret{level: level}),
+    do: {:error, {:unsupported_secret_level, level}}
 
   defp initial_keys(opts, dcid, role) do
     case Keyword.get(opts, :initial_keys) do

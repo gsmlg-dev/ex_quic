@@ -18,11 +18,115 @@ defmodule QUIC.HandshakeSchedulerTest do
       do: {:error, %{kind: :quic, reason: :unexpected}, state, []}
   end
 
+  defmodule RecordedSecret do
+    defstruct [:phase]
+
+    def new(_, _),
+      do:
+        {:ok, %__MODULE__{phase: :initial},
+         [secret(:handshake, :read), secret(:handshake, :write, :b)]}
+
+    def info(%__MODULE__{phase: phase}), do: %{receive_level: phase}
+    def abort(state, _), do: state
+    def feed(state, _level, _bytes), do: {:ok, state, []}
+
+    def secret(level, direction, value \\ :a) do
+      %SSL.QUIC.Secret{
+        level: level,
+        direction: direction,
+        cipher_suite: 0x1301,
+        aead: :aes_128_gcm,
+        hkdf: :sha256,
+        secret: :binary.copy(if(value == :b, do: <<2>>, else: <<1>>), 32)
+      }
+    end
+  end
+
+  defmodule DuplicateSecret do
+    def new(_, _),
+      do:
+        {:ok, %{},
+         [RecordedSecret.secret(:handshake, :read), RecordedSecret.secret(:handshake, :read)]}
+
+    def info(_), do: %{receive_level: :initial}
+    def abort(state, _), do: state
+    def feed(state, _level, _bytes), do: {:ok, state, []}
+  end
+
+  defmodule ConflictingSecret do
+    def new(_, _),
+      do:
+        {:ok, %{},
+         [RecordedSecret.secret(:handshake, :read), RecordedSecret.secret(:handshake, :read, :b)]}
+
+    def info(_), do: %{receive_level: :initial}
+    def abort(state, _), do: state
+    def feed(state, _level, _bytes), do: {:ok, state, []}
+  end
+
+  defmodule UnsupportedSecret do
+    def new(_, _),
+      do:
+        {:ok, %{},
+         [
+           %SSL.QUIC.Secret{
+             level: :handshake,
+             direction: :write,
+             cipher_suite: 0x1301,
+             aead: :aes_256_gcm,
+             hkdf: :sha256,
+             secret: <<0::256>>
+           }
+         ]}
+
+    def info(_), do: %{receive_level: :initial}
+    def abort(state, _), do: state
+    def feed(state, _level, _bytes), do: {:ok, state, []}
+  end
+
   defp new(opts \\ []) do
     HandshakeScheduler.new(
       :client,
       [dcid: <<1, 2, 3, 4>>, scid: <<5, 6, 7, 8>>, adapter: Recorded, min_initial_size: 0] ++ opts
     )
+  end
+
+  defp new_with(adapter) do
+    HandshakeScheduler.new(
+      :client,
+      dcid: <<1, 2, 3, 4>>,
+      scid: <<5, 6, 7, 8>>,
+      adapter: adapter,
+      min_initial_size: 0
+    )
+  end
+
+  test "installs directional QUIC keys from recorded TLS secrets" do
+    result = new_with(RecordedSecret)
+    assert {:ok, state, _effects} = result
+
+    assert %{
+             read: %{key: read_key},
+             write: %{key: write_key, iv: iv, hp: hp, hp_algorithm: :aes_128_gcm}
+           } =
+             state.keys.handshake
+
+    refute read_key == write_key
+    assert byte_size(read_key) == 16
+    assert byte_size(write_key) == 16
+    assert byte_size(iv) == 12
+    assert byte_size(hp) == 16
+  end
+
+  test "rejects duplicate and conflicting directional secret installs" do
+    assert {:error, {:duplicate_secret, :handshake, :read}, _state} = new_with(DuplicateSecret)
+
+    assert {:error, {:conflicting_secret, :handshake, :read}, _state} =
+             new_with(ConflictingSecret)
+  end
+
+  test "rejects unsupported secret algorithm combinations" do
+    assert {:error, {:unsupported_cipher_suite, 0x1301}, _state} = new_with(UnsupportedSecret)
   end
 
   test "TLS Initial emission becomes a protected CRYPTO send effect" do
