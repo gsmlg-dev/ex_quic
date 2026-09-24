@@ -48,12 +48,20 @@ defmodule QUIC.EndpointTest do
   end
 
   test "shared socket admits persistent CID-routed connections and survives one closing" do
-    {:ok, server} = Endpoint.start_link(role: :server, tls: [adapter: RecordedTLS])
+    {:ok, server} =
+      Endpoint.start_link(
+        role: :server,
+        closing_timeout: 40,
+        draining_timeout: 40,
+        tls: [adapter: RecordedTLS]
+      )
 
     {:ok, first} =
       Endpoint.start_link(
         role: :client,
         remote: Endpoint.local(server),
+        closing_timeout: 40,
+        draining_timeout: 40,
         tls: [adapter: RecordedTLS]
       )
 
@@ -61,6 +69,8 @@ defmodule QUIC.EndpointTest do
       Endpoint.start_link(
         role: :client,
         remote: Endpoint.local(server),
+        closing_timeout: 40,
+        draining_timeout: 40,
         tls: [adapter: RecordedTLS]
       )
 
@@ -111,6 +121,46 @@ defmodule QUIC.EndpointTest do
     assert length(Endpoint.connections(server)) == 1
     assert eventually(fn -> Endpoint.connections(server) == [] end)
     assert Endpoint.stats(server).routes == 0
+  end
+
+  test "late Initial for a closing CID is routed to the draining connection" do
+    {:ok, server} =
+      Endpoint.start_link(
+        role: :server,
+        closing_timeout: 40,
+        draining_timeout: 40,
+        tls: [adapter: RecordedTLS]
+      )
+
+    {:ok, sender} = :gen_udp.open(0, [:binary, {:ip, {127, 0, 0, 1}}])
+
+    on_exit(fn ->
+      :gen_udp.close(sender)
+      stop(server)
+    end)
+
+    server_address = Endpoint.local(server)
+    server_cid = <<1, 2, 3, 4, 5, 6, 7, 8>>
+
+    {:ok, _client_scheduler, [initial]} =
+      QUIC.HandshakeScheduler.new(:client,
+        dcid: server_cid,
+        scid: <<9, 10, 11, 12, 13, 14, 15, 16>>,
+        adapter: RecordedTLS
+      )
+
+    {ip, port} = server_address
+    :ok = :gen_udp.send(sender, ip, port, initial.bytes)
+    assert eventually(fn -> length(Endpoint.connections(server)) == 1 end)
+    [entry] = Endpoint.connections(server)
+
+    :ok = Connection.close(entry.pid)
+    assert eventually(fn -> Connection.status(entry.pid).phase == :closing end)
+    :ok = :gen_udp.send(sender, ip, port, initial.bytes)
+    Process.sleep(50)
+    assert length(Endpoint.connections(server)) == 1
+
+    assert eventually(fn -> Endpoint.connections(server) == [] end)
   end
 
   test "real certificate handshake crosses UDP in both roles" do

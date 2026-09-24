@@ -114,6 +114,19 @@ defmodule QUIC.Endpoint do
     end
   end
 
+  def handle_info({:quic_closing, pid, generation, reason}, data) do
+    case data.connections[pid] do
+      %{generation: ^generation} ->
+        # Keep CID routes while the connection drains.  A late Initial addressed
+        # to an old CID must reach the existing process and never trigger admission
+        # of a replacement connection.  Terminal cleanup happens on quic_closed.
+        {:noreply, %{data | last_error: reason}}
+
+      _ ->
+        {:noreply, data}
+    end
+  end
+
   def handle_info({:DOWN, monitor, :process, pid, _reason}, data) do
     if monitor == data.monitor do
       {:stop, :normal, data}
@@ -229,6 +242,9 @@ defmodule QUIC.Endpoint do
            io: {GenUDP, data.socket},
            remote: remote,
            handshake_timeout: Keyword.get(data.opts, :handshake_timeout, 10_000),
+           idle_timeout: Keyword.get(data.opts, :idle_timeout, 30_000),
+           closing_timeout: Keyword.get(data.opts, :closing_timeout),
+           draining_timeout: Keyword.get(data.opts, :draining_timeout),
            scheduler:
              [
                dcid: dcid,

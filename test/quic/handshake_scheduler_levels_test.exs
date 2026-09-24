@@ -206,6 +206,22 @@ defmodule QUIC.HandshakeSchedulerLevelsTest do
              QUIC.Codec.decode_frames(plaintext)
   end
 
+  test "encodes an Initial connection close in the Initial payload" do
+    assert {:ok, state, []} = new()
+
+    state = %{
+      state
+      | pending_control: %{
+          initial: [%{type: :connection_close, error_code: 0, frame_type: 0, reason: "closed"}]
+        }
+    }
+
+    assert {:ok, _state, [effect]} = HandshakeScheduler.schedule(state)
+    assert effect.level == :initial
+    assert {:ok, packet} = QUIC.Codec.parse_initial(effect.bytes)
+    assert byte_size(packet.payload) > 16
+  end
+
   test "builds Application packets with independent packet number space" do
     assert {:ok, state, []} = new()
 

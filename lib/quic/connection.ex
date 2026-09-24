@@ -38,10 +38,15 @@ defmodule QUIC.Connection do
     role = Keyword.fetch!(opts, :role)
     {adapter, writer} = Keyword.fetch!(opts, :io)
     timeout = Keyword.get(opts, :handshake_timeout, 10_000)
+    idle_timeout = Keyword.get(opts, :idle_timeout, 30_000)
+    closing_timeout = Keyword.get(opts, :closing_timeout)
+    draining_timeout = Keyword.get(opts, :draining_timeout)
     owner = Keyword.fetch!(opts, :owner)
 
     if role in [:client, :server] and is_pid(writer) and is_pid(owner) and
-         is_integer(timeout) and timeout > 0 do
+         is_integer(timeout) and timeout > 0 and is_integer(idle_timeout) and idle_timeout > 0 and
+         (is_nil(closing_timeout) or (is_integer(closing_timeout) and closing_timeout > 0)) and
+         (is_nil(draining_timeout) or (is_integer(draining_timeout) and draining_timeout > 0)) do
       with {:ok, budget} <- Endpoint.new(Keyword.get(opts, :limits, [])) do
         # Clients are not subject to the server's pre-validation amplification limit.
         budget =
@@ -68,6 +73,12 @@ defmodule QUIC.Connection do
           parameters_valid: false,
           generation: generation,
           deadline: adapter.monotonic_time() + timeout * 1000,
+          idle_timeout: idle_timeout,
+          idle_deadline: nil,
+          closing_timeout: closing_timeout,
+          draining_timeout: draining_timeout,
+          closing_deadline: nil,
+          draining_deadline: nil,
           reason: :closed
         }
 
@@ -128,8 +139,19 @@ defmodule QUIC.Connection do
     {:keep_state_and_data, [{:reply, from, status}]}
   end
 
-  def handle_event({:call, from}, :close, _phase, data),
-    do: {:stop_and_reply, :normal, [{:reply, from, :ok}], %{data | reason: :closed}}
+  def handle_event({:call, from}, :close, phase, _data) when phase in [:closing, :draining],
+    do: {:keep_state_and_data, [{:reply, from, :ok}]}
+
+  def handle_event({:call, from}, :close, phase, data)
+      when phase in [:handshaking, :established] do
+    case begin_closing(data, :closed) do
+      {:ok, next, actions} ->
+        {:next_state, :closing, next, [{:reply, from, :ok} | actions]}
+
+      {:error, reason, next} ->
+        stop_with_replies(next, reason, [{:reply, from, {:error, reason}}])
+    end
+  end
 
   def handle_event(
         {:call, {caller, _} = from},
@@ -161,6 +183,20 @@ defmodule QUIC.Connection do
   end
 
   def handle_event(
+        {:call, {caller, _} = from},
+        {:datagram, generation, _bytes, _at},
+        phase,
+        data
+      )
+      when phase in [:closing, :draining] do
+    cond do
+      caller != data.owner -> reply(from, {:error, :not_owner})
+      generation != data.generation -> reply(from, {:error, :stale_generation})
+      true -> reply(from, :ok)
+    end
+  end
+
+  def handle_event(
         {:timeout, :handshake},
         generation,
         :handshaking,
@@ -168,7 +204,39 @@ defmodule QUIC.Connection do
       ),
       do: stop(data, :handshake_timeout)
 
-  def handle_event({:timeout, :recovery}, {generation, token}, _phase, data) do
+  def handle_event({:timeout, :idle}, generation, :established, %{generation: generation} = data) do
+    now = data.adapter.monotonic_time()
+
+    if is_integer(data.idle_deadline) and now >= data.idle_deadline do
+      stop(data, :idle_timeout)
+    else
+      {:keep_state, data, idle_timer(data)}
+    end
+  end
+
+  def handle_event({:timeout, :closing}, generation, :closing, %{generation: generation} = data) do
+    deadline = data.closing_deadline
+    now = data.adapter.monotonic_time()
+
+    if is_integer(deadline) and now >= deadline do
+      next = %{data | draining_deadline: now + data.draining_timeout * 1000}
+      {:next_state, :draining, next, [{{:timeout, :draining}, data.draining_timeout, generation}]}
+    else
+      {:keep_state, data, closing_timer(data)}
+    end
+  end
+
+  def handle_event({:timeout, :draining}, generation, :draining, %{generation: generation} = data) do
+    if is_integer(data.draining_deadline) and
+         data.adapter.monotonic_time() >= data.draining_deadline do
+      stop(data, data.reason)
+    else
+      {:keep_state, data, draining_timer(data)}
+    end
+  end
+
+  def handle_event({:timeout, :recovery}, {generation, token}, phase, data)
+      when phase in [:handshaking, :established] do
     recovery = data.scheduler.recovery
     now = data.adapter.monotonic_time()
 
@@ -184,6 +252,10 @@ defmodule QUIC.Connection do
       :keep_state_and_data
     end
   end
+
+  def handle_event({:timeout, :recovery}, _token, phase, _data)
+      when phase in [:closing, :draining],
+      do: :keep_state_and_data
 
   def handle_event(:info, {:DOWN, ref, :process, _pid, reason}, _phase, data) do
     cond do
@@ -213,11 +285,22 @@ defmodule QUIC.Connection do
             do: Enum.reject(data.pending, &(&1.level == :initial)),
             else: data.pending
 
-        data = %{data | scheduler: scheduler, budget: budget, pending: pending}
+        data = refresh_idle(%{data | scheduler: scheduler, budget: budget, pending: pending})
         effects = Enum.flat_map(events, &Map.get(&1, :generated, []))
 
         if Enum.any?(events, &(&1.type in [:connection_close, :application_close])) do
-          {:stop_and_reply, :normal, [{:reply, from, :ok}], %{data | reason: :peer_closed}}
+          drain_timeout = lifecycle_timeout(data, :draining)
+
+          next = %{
+            data
+            | reason: :peer_closed,
+              draining_timeout: drain_timeout,
+              draining_deadline: data.adapter.monotonic_time() + drain_timeout * 1000
+          }
+
+          {:next_state, :draining, next,
+           close_cancel_actions() ++
+             [{{:timeout, :draining}, drain_timeout, data.generation}, {:reply, from, :ok}]}
         else
           case readiness(data) do
             {:ok, data, extra} ->
@@ -315,11 +398,20 @@ defmodule QUIC.Connection do
       true ->
         case flush(%{data | pending: pending}) do
           {:ok, %{ready: true} = data} ->
-            {:next_state, :established, data,
-             replies ++ [{{:timeout, :handshake}, :cancel}] ++ recovery_timer(data)}
+            established_data = %{
+              data
+              | idle_deadline:
+                  data.adapter.monotonic_time() + Map.get(data, :idle_timeout, 30_000) * 1000
+            }
+
+            {:next_state, :established, established_data,
+             replies ++
+               [{{:timeout, :handshake}, :cancel}] ++
+               recovery_timer(established_data) ++
+               idle_timer(established_data)}
 
           {:ok, data} ->
-            {:keep_state, data, replies ++ recovery_timer(data)}
+            {:keep_state, data, replies ++ recovery_timer(data) ++ idle_timer(data)}
 
           {:error, reason, data} ->
             stop_with_replies(data, reason, replies)
@@ -387,6 +479,124 @@ defmodule QUIC.Connection do
       deadline ->
         delay = max(0, div(deadline - data.adapter.monotonic_time() + 999, 1000))
         [{{:timeout, :recovery}, delay, {data.generation, recovery.timer_generation}}]
+    end
+  end
+
+  defp idle_timer(%{idle_deadline: deadline} = data) when is_integer(deadline) do
+    delay =
+      max(0, div(Map.fetch!(data, :idle_deadline) - data.adapter.monotonic_time() + 999, 1000))
+
+    [{{:timeout, :idle}, delay, data.generation}]
+  end
+
+  defp idle_timer(_data), do: [{{:timeout, :idle}, :cancel}]
+
+  defp closing_timer(data) do
+    delay = max(0, div(data.closing_deadline - data.adapter.monotonic_time() + 999, 1000))
+    [{{:timeout, :closing}, delay, data.generation}]
+  end
+
+  defp draining_timer(data) do
+    delay = max(0, div(data.draining_deadline - data.adapter.monotonic_time() + 999, 1000))
+    [{{:timeout, :draining}, delay, data.generation}]
+  end
+
+  defp refresh_idle(data) do
+    timeout = Map.get(data, :idle_timeout, 30_000)
+    Map.put(data, :idle_deadline, data.adapter.monotonic_time() + timeout * 1000)
+  end
+
+  defp lifecycle_timeout(data, kind) do
+    pto_ms = div(Recovery.pto_duration(data.scheduler.recovery) * 3 + 999, 1000)
+
+    configured =
+      if kind == :closing,
+        do: Map.get(data, :closing_timeout),
+        else: Map.get(data, :draining_timeout)
+
+    configured || pto_ms
+  end
+
+  defp close_cancel_actions do
+    [
+      {{:timeout, :handshake}, :cancel},
+      {{:timeout, :recovery}, :cancel},
+      {{:timeout, :idle}, :cancel}
+    ]
+  end
+
+  # A close is sent once at the strongest currently available encryption level.
+  # The process remains routable while closing so late packets cannot create a new
+  # connection, then drains without emitting normal traffic before route cleanup.
+  defp begin_closing(data, reason) do
+    send(data.owner, {:quic_closing, self(), data.generation, reason})
+    scheduler = data.scheduler
+    closing_timeout = lifecycle_timeout(data, :closing)
+    draining_timeout = lifecycle_timeout(data, :draining)
+
+    level =
+      cond do
+        Map.has_key?(scheduler.keys, :application) -> :application
+        Map.has_key?(scheduler.keys, :handshake) -> :handshake
+        Map.has_key?(scheduler.keys, :initial) -> :initial
+        true -> nil
+      end
+
+    if level == nil do
+      now = data.adapter.monotonic_time()
+
+      {:ok,
+       %{
+         data
+         | pending: [],
+           reason: reason,
+           closing_timeout: closing_timeout,
+           draining_timeout: draining_timeout,
+           closing_deadline: now + closing_timeout * 1000
+       }, close_cancel_actions() ++ [{{:timeout, :closing}, closing_timeout, data.generation}]}
+    else
+      frame =
+        if level == :application do
+          %{type: :application_close, error_code: 0, reason: Atom.to_string(reason)}
+        else
+          %{type: :connection_close, error_code: 0, frame_type: 0, reason: Atom.to_string(reason)}
+        end
+
+      scheduler = %{
+        scheduler
+        | pending: [],
+          effects: [],
+          pending_acks: %{},
+          pending_control: Map.put(scheduler.pending_control, level, [frame])
+      }
+
+      case HandshakeScheduler.schedule(scheduler) do
+        {:ok, scheduler, effects} ->
+          now = data.adapter.monotonic_time()
+
+          next = %{
+            data
+            | scheduler: scheduler,
+              pending: effects,
+              reason: reason,
+              closing_timeout: closing_timeout,
+              draining_timeout: draining_timeout,
+              closing_deadline: now + closing_timeout * 1000
+          }
+
+          case flush(next) do
+            {:ok, flushed} ->
+              {:ok, flushed,
+               close_cancel_actions() ++
+                 [{{:timeout, :closing}, closing_timeout, data.generation}]}
+
+            {:error, send_reason, flushed} ->
+              {:error, send_reason, flushed}
+          end
+
+        {:error, schedule_reason, scheduler} ->
+          {:error, schedule_reason, %{data | scheduler: scheduler, reason: reason}}
+      end
     end
   end
 

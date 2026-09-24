@@ -561,9 +561,10 @@ defmodule QUIC.HandshakeScheduler do
 
   defp build_protected(state, :initial, offset, bytes, keys) do
     ack_frames = Map.get(state.pending_acks, :initial, [])
+    control = Map.get(state.pending_control, :initial, [])
     crypto = %{type: :crypto, offset: offset, data: bytes}
 
-    with {:ok, ack_bytes} <- Codec.encode_frames(ack_frames),
+    with {:ok, ack_bytes} <- Codec.encode_frames(ack_frames ++ control),
          {:ok, crypto_bytes} <-
            if(bytes == <<>>, do: {:ok, <<>>}, else: Codec.encode_frames([crypto])),
          plaintext <- crypto_bytes <> ack_bytes,

@@ -70,6 +70,17 @@ defmodule QUIC.Recovery do
 
   @type t :: %__MODULE__{}
 
+  @doc "Current probe timeout duration in microseconds, before PTO backoff."
+  @spec pto_duration(t()) :: pos_integer()
+  def pto_duration(state) do
+    (state.rtt.smoothed || @default_rtt) +
+      max(1000, 4 * (state.rtt.variance || div(@default_rtt, 2))) +
+      if(Enum.any?(state.spaces, fn {space, _} -> space == :application end),
+        do: state.rtt.max_ack_delay,
+        else: 0
+      )
+  end
+
   @spec reserve(t(), atom(), map(), non_neg_integer()) ::
           {:ok, t(), Packet.t()} | {:error, atom()}
   def reserve(state, space, metadata \\ %{}, bytes \\ 0)

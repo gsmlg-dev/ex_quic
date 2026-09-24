@@ -206,4 +206,30 @@ defmodule QUIC.ConnectionTest do
     :ok = GenUDP.close(writer)
     assert_receive {:quic_closed, ^conn, ^generation, {:writer_down, :normal}}, 1_000
   end
+
+  test "close enters closing, ignores late datagrams, then drains and cleans up" do
+    {:ok, peer} = GenUDP.open()
+    {:ok, writer} = GenUDP.open()
+
+    {:ok, conn} =
+      Connection.start_link(
+        options({GenUDP, writer},
+          remote: GenUDP.local(peer),
+          closing_timeout: 40,
+          draining_timeout: 40
+        )
+      )
+
+    generation = Connection.status(conn).generation
+    assert :ok = Connection.close(conn)
+    assert Connection.status(conn).phase == :closing
+    assert :ok = Connection.deliver(conn, generation, <<0>>, GenUDP.monotonic_time())
+    assert Connection.status(conn).phase == :closing
+    assert_receive {:quic_closing, ^conn, ^generation, :closed}, 1_000
+    assert_receive {:quic_closed, ^conn, ^generation, :closed}, 1_000
+    refute Process.alive?(conn)
+
+    :ok = GenUDP.close(writer)
+    :ok = GenUDP.close(peer)
+  end
 end
