@@ -402,7 +402,7 @@ defmodule QUIC.Connection do
         {:stop_and_reply, :normal, [{:reply, from, {:error, reason}}], %{data | reason: reason}}
 
       {:error, reason, _scheduler} ->
-        reply(from, {:error, reason})
+        stop_with_replies(data, reason, [{:reply, from, {:error, reason}}])
     end
   end
 

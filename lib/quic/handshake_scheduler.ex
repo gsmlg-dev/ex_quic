@@ -9,7 +9,7 @@ defmodule QUIC.HandshakeScheduler do
 
   import Bitwise
 
-  alias QUIC.{Codec, Protection, Recovery, TLSDriver, PeerCIDs, Streams}
+  alias QUIC.{Codec, Protection, Recovery, TLSDriver, PeerCIDs, Streams, TransportParameters}
 
   @levels [:initial, :handshake, :application]
   @spaces [:initial, :handshake, :application]
@@ -556,6 +556,12 @@ defmodule QUIC.HandshakeScheduler do
       {:peer_authenticated, _}, acc ->
         {:cont, acc}
 
+      {:peer_transport_parameters, bytes, :authenticated}, {:ok, state, generated} ->
+        case validate_peer_transport_parameters(state, bytes) do
+          :ok -> {:cont, {:ok, state, generated}}
+          {:error, reason} -> {:halt, {:error, {:transport_parameters, reason}, state}}
+        end
+
       {:peer_transport_parameters, _, _}, acc ->
         {:cont, acc}
 
@@ -568,6 +574,23 @@ defmodule QUIC.HandshakeScheduler do
       _, _ ->
         {:halt, {:error, :invalid_tls_action, state}}
     end)
+  end
+
+  defp validate_peer_transport_parameters(%{peer_initial_scid: nil}, _bytes), do: :ok
+
+  defp validate_peer_transport_parameters(state, bytes) do
+    peer_role = if state.role == :client, do: :server, else: :client
+
+    with {:ok, parameters} <- TransportParameters.decode(bytes),
+         :ok <-
+           TransportParameters.validate(parameters,
+             role: peer_role,
+             initial_source_connection_id: state.peer_initial_scid,
+             retry_source_connection_id: if(peer_role == :server, do: state.retry_scid),
+             original_destination_connection_id: if(peer_role == :server, do: state.original_dcid)
+           ) do
+      :ok
+    end
   end
 
   defp protect_and_reserve(state, %{level: level, offset: offset, bytes: bytes}) do
