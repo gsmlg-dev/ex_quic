@@ -9,7 +9,7 @@ defmodule QUIC.HandshakeScheduler do
 
   import Bitwise
 
-  alias QUIC.{Codec, Protection, Recovery, TLSDriver, PeerCIDs}
+  alias QUIC.{Codec, Protection, Recovery, TLSDriver, PeerCIDs, Streams}
 
   @levels [:initial, :handshake, :application]
   @spaces [:initial, :handshake, :application]
@@ -34,7 +34,8 @@ defmodule QUIC.HandshakeScheduler do
             max_packet_size: @default_max_packet,
             min_initial_size: 1200,
             max_queue: 64,
-            queued: 0
+            queued: 0,
+            streams: nil
 
   @type t :: %__MODULE__{}
 
@@ -71,7 +72,8 @@ defmodule QUIC.HandshakeScheduler do
           ),
         max_packet_size: Keyword.get(opts, :max_packet_size, @default_max_packet),
         min_initial_size: Keyword.get(opts, :min_initial_size, 1200),
-        max_queue: Keyword.get(opts, :max_queue, 64)
+        max_queue: Keyword.get(opts, :max_queue, 64),
+        streams: Streams.new(role, Keyword.get(opts, :streams, []))
       }
 
       with {:ok, state, sends} <- ingest_tls_effects(state, tls_effects),
@@ -114,6 +116,29 @@ defmodule QUIC.HandshakeScheduler do
   end
 
   def feed(state, _, _, _), do: {:error, :invalid_crypto_input, state, []}
+
+  @doc "Admit one application stream frame into the bounded scheduler queue."
+  @spec send_stream(t(), non_neg_integer(), binary(), boolean()) ::
+          {:ok, t(), list()} | {:blocked, map()} | {:error, term()}
+  def send_stream(%__MODULE__{streams: streams} = state, id, data, fin \\ false) do
+    with {:ok, next_streams, frame} <- Streams.send(streams, id, data, fin),
+         true <- Map.has_key?(state.keys, :application) do
+      state = %{state | streams: next_streams}
+      control = Map.get(state.pending_control, :application, []) ++ [frame]
+
+      if length(control) > state.max_queue,
+        do: {:error, :send_queue_limit},
+        else:
+          schedule(%{
+            state
+            | pending_control: Map.put(state.pending_control, :application, control)
+          })
+    else
+      false -> {:error, :application_unavailable}
+      {:blocked, frame} -> {:blocked, frame}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   @doc "Queue an ACK frame for the next packet in a packet-number space."
   def queue_ack(%__MODULE__{} = state, space, ack) when space in @spaces and is_map(ack) do
@@ -950,6 +975,90 @@ defmodule QUIC.HandshakeScheduler do
           {:error, reason} ->
             {:error, {:invalid_ack, reason}}
         end
+
+      %{type: :stream} = frame when level == :application ->
+        case Streams.receive(state.streams, frame) do
+          {:ok, streams, stream_events} ->
+            next = %{state | streams: streams}
+
+            dispatch_frames(next, level, space, number, rest, at, [
+              %{type: :stream, frame: frame, events: stream_events} | events
+            ])
+
+          {:error, reason} ->
+            {:error, {:stream, reason}}
+        end
+
+      %{type: :stream} ->
+        {:error, {:wrong_encryption_level, :stream, level}}
+
+      %{type: :reset_stream} = frame when level == :application ->
+        case Streams.receive_reset(
+               state.streams,
+               frame.stream_id,
+               frame.error_code,
+               frame.final_size
+             ) do
+          {:ok, streams, stream_events} ->
+            dispatch_frames(%{state | streams: streams}, level, space, number, rest, at, [
+              %{type: :reset_stream, frame: frame, events: stream_events} | events
+            ])
+
+          {:error, reason} ->
+            {:error, {:stream, reason}}
+        end
+
+      %{type: :reset_stream} ->
+        {:error, {:wrong_encryption_level, :reset_stream, level}}
+
+      %{type: :stop_sending} = frame when level == :application ->
+        case Streams.peer_stop_sending(state.streams, frame.stream_id, frame.error_code) do
+          {:ok, streams} ->
+            dispatch_frames(%{state | streams: streams}, level, space, number, rest, at, [
+              frame | events
+            ])
+
+          {:error, reason} ->
+            {:error, {:stream, reason}}
+        end
+
+      %{type: :stop_sending} ->
+        {:error, {:wrong_encryption_level, :stop_sending, level}}
+
+      %{type: type} = frame
+      when type in [:max_data, :max_stream_data, :max_streams_bidi, :max_streams_uni] and
+             level == :application ->
+        case Streams.update_credit(state.streams, frame) do
+          {:ok, streams, _status} ->
+            dispatch_frames(%{state | streams: streams}, level, space, number, rest, at, [
+              frame | events
+            ])
+
+          {:error, reason} ->
+            {:error, {:stream, reason}}
+        end
+
+      %{type: type}
+      when type in [:max_data, :max_stream_data, :max_streams_bidi, :max_streams_uni] ->
+        {:error, {:wrong_encryption_level, type, level}}
+
+      %{type: type} = frame
+      when type in [
+             :data_blocked,
+             :stream_data_blocked,
+             :streams_blocked_bidi,
+             :streams_blocked_uni
+           ] and level == :application ->
+        dispatch_frames(state, level, space, number, rest, at, [frame | events])
+
+      %{type: type}
+      when type in [
+             :data_blocked,
+             :stream_data_blocked,
+             :streams_blocked_bidi,
+             :streams_blocked_uni
+           ] ->
+        {:error, {:wrong_encryption_level, type, level}}
 
       %{type: :new_connection_id} = frame when level == :application ->
         if state.peer_cids do

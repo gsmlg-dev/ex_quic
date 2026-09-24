@@ -139,4 +139,20 @@ defmodule QUIC.CodecTest do
                %{type: :application_close, error_code: 1, reason: long_reason}
              ])
   end
+
+  test "encodes and decodes stream and flow-control frames with bounded fields" do
+    frames = [
+      %{type: :stream, stream_id: 4, offset: 3, data: "abc", fin: true},
+      %{type: :reset_stream, stream_id: 4, error_code: 7, final_size: 6},
+      %{type: :stop_sending, stream_id: 4, error_code: 8},
+      %{type: :max_data, value: 100},
+      %{type: :max_stream_data, stream_id: 4, value: 50},
+      %{type: :max_streams_bidi, value: 2},
+      %{type: :max_streams_uni, value: 3}
+    ]
+
+    assert {:ok, wire} = QUIC.Codec.encode_frames(frames)
+    assert {:ok, ^frames, <<>>} = QUIC.Codec.decode_frames(wire)
+    assert {:error, :malformed_stream_frame} = QUIC.Codec.decode_frames(<<0x0E, 4, 3, 4, "a">>)
+  end
 end

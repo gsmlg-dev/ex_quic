@@ -209,6 +209,72 @@ defmodule QUIC.Codec do
     do: encode_frames(rest, [<<0x1E>> | acc])
 
   defp encode_frames(
+         [%{type: :stream, stream_id: id, offset: offset, data: data} = frame | rest],
+         acc
+       )
+       when is_integer(id) and id >= 0 and is_integer(offset) and offset >= 0 and is_binary(data) do
+    type = 0x0E ||| if(Map.get(frame, :fin, false), do: 1, else: 0)
+
+    with {:ok, stream} <- encode_varint(id),
+         {:ok, off} <- encode_varint(offset),
+         {:ok, length} <- encode_varint(byte_size(data)) do
+      encode_frames(rest, [data, length, off, stream, <<type>> | acc])
+    end
+  end
+
+  defp encode_frames(
+         [%{type: :reset_stream, stream_id: id, error_code: code, final_size: final} | rest],
+         acc
+       )
+       when is_integer(id) and id >= 0 and is_integer(code) and code >= 0 and is_integer(final) and
+              final >= 0 do
+    with {:ok, stream} <- encode_varint(id),
+         {:ok, error} <- encode_varint(code),
+         {:ok, size} <- encode_varint(final) do
+      encode_frames(rest, [size, error, stream, <<4>> | acc])
+    end
+  end
+
+  defp encode_frames([%{type: :stop_sending, stream_id: id, error_code: code} | rest], acc)
+       when is_integer(id) and id >= 0 and is_integer(code) and code >= 0 do
+    with {:ok, stream} <- encode_varint(id), {:ok, error} <- encode_varint(code) do
+      encode_frames(rest, [error, stream, <<5>> | acc])
+    end
+  end
+
+  defp encode_frames([%{type: type, value: value} | rest], acc)
+       when type in [:max_data, :max_streams_bidi, :max_streams_uni] and is_integer(value) and
+              value >= 0 do
+    wire = %{max_data: 0x10, max_streams_bidi: 0x12, max_streams_uni: 0x13}[type]
+
+    with {:ok, encoded} <- encode_varint(value),
+         do: encode_frames(rest, [encoded, <<wire>> | acc])
+  end
+
+  defp encode_frames([%{type: :max_stream_data, stream_id: id, value: value} | rest], acc)
+       when is_integer(id) and id >= 0 and is_integer(value) and value >= 0 do
+    with {:ok, stream} <- encode_varint(id),
+         {:ok, encoded} <- encode_varint(value),
+         do: encode_frames(rest, [encoded, stream, <<0x11>> | acc])
+  end
+
+  defp encode_frames([%{type: type, value: value} | rest], acc)
+       when type in [:data_blocked, :streams_blocked_bidi, :streams_blocked_uni] and
+              is_integer(value) and value >= 0 do
+    wire = %{data_blocked: 0x14, streams_blocked_bidi: 0x16, streams_blocked_uni: 0x17}[type]
+
+    with {:ok, encoded} <- encode_varint(value),
+         do: encode_frames(rest, [encoded, <<wire>> | acc])
+  end
+
+  defp encode_frames([%{type: :stream_data_blocked, stream_id: id, value: value} | rest], acc)
+       when is_integer(id) and id >= 0 and is_integer(value) and value >= 0 do
+    with {:ok, stream} <- encode_varint(id),
+         {:ok, encoded} <- encode_varint(value),
+         do: encode_frames(rest, [encoded, stream, <<0x15>> | acc])
+  end
+
+  defp encode_frames(
          [
            %{
              type: :new_connection_id,
@@ -361,6 +427,68 @@ defmodule QUIC.Codec do
   defp decode_frames(<<0x1E, rest::binary>>, acc, limit),
     do: decode_frames(rest, [%{type: :handshake_done} | acc], limit - 1)
 
+  defp decode_frames(<<type, rest::binary>>, acc, limit) when type in 0x08..0x0F do
+    fin = (type &&& 1) == 1
+    has_length = (type &&& 2) == 2
+    has_offset = (type &&& 4) == 4
+
+    with {:ok, stream_id, rest} <- decode_varint(rest),
+         {:ok, offset, rest} <- if(has_offset, do: decode_varint(rest), else: {:ok, 0, rest}),
+         {:ok, length, rest} <-
+           if(has_length, do: decode_varint(rest), else: {:ok, byte_size(rest), rest}),
+         :ok <- bound_length(length, byte_size(rest)),
+         <<data::binary-size(^length), tail::binary>> <- rest do
+      frame = %{type: :stream, stream_id: stream_id, offset: offset, data: data, fin: fin}
+      decode_frames(tail, [frame | acc], limit - 1)
+    else
+      _ -> {:error, :malformed_stream_frame}
+    end
+  end
+
+  defp decode_frames(<<4, rest::binary>>, acc, limit) do
+    with {:ok, stream_id, rest} <- decode_varint(rest),
+         {:ok, error_code, rest} <- decode_varint(rest),
+         {:ok, final_size, tail} <- decode_varint(rest) do
+      decode_frames(
+        tail,
+        [
+          %{
+            type: :reset_stream,
+            stream_id: stream_id,
+            error_code: error_code,
+            final_size: final_size
+          }
+          | acc
+        ],
+        limit - 1
+      )
+    else
+      _ -> {:error, :malformed_reset_stream}
+    end
+  end
+
+  defp decode_frames(<<5, rest::binary>>, acc, limit) do
+    with {:ok, stream_id, rest} <- decode_varint(rest),
+         {:ok, error_code, tail} <- decode_varint(rest) do
+      decode_frames(
+        tail,
+        [%{type: :stop_sending, stream_id: stream_id, error_code: error_code} | acc],
+        limit - 1
+      )
+    else
+      _ -> {:error, :malformed_stop_sending}
+    end
+  end
+
+  defp decode_frames(<<type, rest::binary>>, acc, limit) when type in 0x10..0x17 do
+    with {:ok, first, rest} <- decode_varint(rest),
+         {frame, tail} <- decode_flow_frame(type, first, rest) do
+      decode_frames(tail, [frame | acc], limit - 1)
+    else
+      _ -> {:error, :malformed_flow_control}
+    end
+  end
+
   defp decode_frames(<<type, _::binary>>, _acc, _limit) when type >= 0x08 and type <= 0x0F,
     do: {:error, :unsupported_frame}
 
@@ -390,6 +518,38 @@ defmodule QUIC.Codec do
         {:cont, :ok}
 
       %{type: type}, :ok when type in [:new_connection_id, :retire_connection_id] ->
+        {:halt, {:wrong_encryption_level, type, level}}
+
+      %{type: type}, :ok
+      when type in [
+             :stream,
+             :reset_stream,
+             :stop_sending,
+             :max_data,
+             :max_stream_data,
+             :max_streams_bidi,
+             :max_streams_uni,
+             :data_blocked,
+             :stream_data_blocked,
+             :streams_blocked_bidi,
+             :streams_blocked_uni
+           ] and level == :application ->
+        {:cont, :ok}
+
+      %{type: type}, :ok
+      when type in [
+             :stream,
+             :reset_stream,
+             :stop_sending,
+             :max_data,
+             :max_stream_data,
+             :max_streams_bidi,
+             :max_streams_uni,
+             :data_blocked,
+             :stream_data_blocked,
+             :streams_blocked_bidi,
+             :streams_blocked_uni
+           ] ->
         {:halt, {:wrong_encryption_level, type, level}}
 
       _, :ok ->
@@ -470,6 +630,30 @@ defmodule QUIC.Codec do
       decode_ack_pairs(rest, [{low, high} | ranges], low, count - 1)
     else
       _ -> {:error, :invalid_ack_ranges}
+    end
+  end
+
+  defp decode_flow_frame(0x10, value, rest), do: {%{type: :max_data, value: value}, rest}
+  defp decode_flow_frame(0x12, value, rest), do: {%{type: :max_streams_bidi, value: value}, rest}
+  defp decode_flow_frame(0x13, value, rest), do: {%{type: :max_streams_uni, value: value}, rest}
+  defp decode_flow_frame(0x14, value, rest), do: {%{type: :data_blocked, value: value}, rest}
+
+  defp decode_flow_frame(0x16, value, rest),
+    do: {%{type: :streams_blocked_bidi, value: value}, rest}
+
+  defp decode_flow_frame(0x17, value, rest),
+    do: {%{type: :streams_blocked_uni, value: value}, rest}
+
+  defp decode_flow_frame(type, stream_id, rest) when type in [0x11, 0x15] do
+    case decode_varint(rest) do
+      {:ok, value, tail} ->
+        {if(type == 0x11,
+           do: %{type: :max_stream_data, stream_id: stream_id, value: value},
+           else: %{type: :stream_data_blocked, stream_id: stream_id, value: value}
+         ), tail}
+
+      _ ->
+        {:error, :malformed_flow_control}
     end
   end
 

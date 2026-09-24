@@ -27,6 +27,10 @@ defmodule QUIC.Connection do
   def status(pid), do: :gen_statem.call(pid, :status)
   def close(pid), do: :gen_statem.call(pid, :close)
 
+  @doc "Admit bounded application bytes to a connection-owned stream."
+  def send_stream(pid, stream_id, data, fin \\ false),
+    do: :gen_statem.call(pid, {:stream_send, stream_id, data, fin})
+
   def deliver(pid, generation, bytes, received_at),
     do: :gen_statem.call(pid, {:datagram, generation, bytes, received_at})
 
@@ -152,6 +156,23 @@ defmodule QUIC.Connection do
         stop_with_replies(next, reason, [{:reply, from, {:error, reason}}])
     end
   end
+
+  def handle_event({:call, from}, {:stream_send, stream_id, bytes, fin}, :established, data)
+      when is_integer(stream_id) and is_binary(bytes) and is_boolean(fin) do
+    case HandshakeScheduler.send_stream(data.scheduler, stream_id, bytes, fin) do
+      {:ok, scheduler, effects} ->
+        advance(%{data | scheduler: scheduler}, effects, [{:reply, from, :ok}])
+
+      {:blocked, frame} ->
+        reply(from, {:blocked, frame})
+
+      {:error, reason} ->
+        reply(from, {:error, reason})
+    end
+  end
+
+  def handle_event({:call, from}, {:stream_send, _stream_id, _bytes, _fin}, _phase, _data),
+    do: reply(from, {:error, :not_established})
 
   def handle_event(
         {:call, {caller, _} = from},
@@ -286,6 +307,7 @@ defmodule QUIC.Connection do
             else: data.pending
 
         data = refresh_idle(%{data | scheduler: scheduler, budget: budget, pending: pending})
+        notify_stream_events(data.owner, events)
         effects = Enum.flat_map(events, &Map.get(&1, :generated, []))
 
         if Enum.any?(events, &(&1.type in [:connection_close, :application_close])) do
@@ -622,6 +644,19 @@ defmodule QUIC.Connection do
     end
   catch
     :exit, _ -> {{:error, :writer_unavailable}, data.adapter.monotonic_time()}
+  end
+
+  defp notify_stream_events(owner, events) do
+    Enum.each(events, fn
+      %{type: :stream, frame: frame, events: stream_events} ->
+        send(owner, {:quic_stream, self(), frame.stream_id, stream_events})
+
+      %{type: :reset_stream, frame: frame, events: stream_events} ->
+        send(owner, {:quic_stream_reset, self(), frame.stream_id, stream_events})
+
+      _ ->
+        :ok
+    end)
   end
 
   defp initial_packet?(<<first, _::binary>>), do: Bitwise.band(first, 0xF0) == 0xC0

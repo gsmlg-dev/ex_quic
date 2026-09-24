@@ -2,6 +2,7 @@ defmodule QUIC.HandshakeSchedulerLevelsTest do
   use ExUnit.Case, async: true
 
   alias QUIC.HandshakeScheduler
+  alias QUIC.Streams
   import Bitwise
 
   defmodule Recorded do
@@ -115,6 +116,20 @@ defmodule QUIC.HandshakeSchedulerLevelsTest do
 
       refute client.keys[level][a].key == server.keys[level][a].key
     end
+  end
+
+  test "application stream admission uses the protected packet and recovery path" do
+    {:ok, state, []} = new()
+    {:ok, streams, 0} = Streams.open(state.streams, :bidi)
+    state = %{state | streams: streams}
+
+    assert {:ok, next, effects} = HandshakeScheduler.send_stream(state, 0, "hello", true)
+    assert [%{type: :send, level: :application, bytes: packet}] = effects
+    assert byte_size(packet) > 0
+    assert next.streams.streams[0].send_final == 5
+
+    assert [%{type: :stream, stream_id: 0, offset: 0, data: "hello", fin: true}] =
+             next.recovery.spaces.application.sent[0].metadata.control
   end
 
   test "independently decrypted outbound Handshake replays and retransmits without another TLS feed" do
