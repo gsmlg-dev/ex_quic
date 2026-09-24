@@ -1,0 +1,66 @@
+name: E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version to test"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: End-to-End Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch release artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "v${{ inputs.version }}" --pattern "ex_quic-*.tar" || echo "Release artifact not downloaded, continuing with source checkout"
+
+      - name: Setup BEAM
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.20.1'
+          otp-version: '29.0'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: e2e-${{ runner.os }}-otp29.0-elixir1.20.1-mix-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            e2e-${{ runner.os }}-otp29.0-elixir1.20.1-mix-
+
+      - name: Install dependencies
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+          mix deps.get
+          mix compile --warnings-as-errors
+
+      - name: Run E2E test suite
+        run: |
+          mkdir -p _build/interop
+          mix run scripts/interop/run.exs client _build/interop/client
+          mix run scripts/interop/run.exs server _build/interop/server
+          mix run scripts/interop/stream_interop.exs
+          uv run --python 3.12 --with aioquic==1.2.0 python scripts/interop/test_peer.py

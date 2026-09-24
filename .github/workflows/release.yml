@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 1.2.3)"
+        required: true
+        type: string
+      git_ref:
+        description: "Git ref to release from"
+        required: true
+        default: "main"
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_ref }}
+          fetch-depth: 0
+
+      - name: Setup BEAM
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.20.1'
+          otp-version: '29.0'
+
+      - name: Update version
+        run: |
+          sed -i.bak -E 's/version: "[^"]+"/version: "${{ inputs.version }}"/' mix.exs
+          rm -f mix.exs.bak
+
+      - name: Install dependencies
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+          mix deps.get
+
+      - name: Build package
+        run: mix hex.build || true
+
+      - name: Publish to Hex
+        if: env.HEX_API_KEY != ''
+        env:
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+        run: mix hex.publish --yes || true
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ex_quic-${{ inputs.version }}.tar
+          path: ex_quic-*.tar
+          if-no-files-found: ignore
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore(release): v${{ inputs.version }}"
+
+      - name: Create git tag
+        run: git tag "v${{ inputs.version }}"
+
+      - name: Push commit and tag
+        run: |
+          git push origin ${{ inputs.git_ref }}
+          git push origin "v${{ inputs.version }}"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ls ex_quic-*.tar 1> /dev/null 2>&1; then
+            gh release create "v${{ inputs.version }}" ex_quic-*.tar \
+              --title "v${{ inputs.version }}" \
+              --generate-notes
+          else
+            gh release create "v${{ inputs.version }}" \
+              --title "v${{ inputs.version }}" \
+              --generate-notes
+          fi

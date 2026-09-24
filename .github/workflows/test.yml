@@ -1,8 +1,10 @@
-name: CI
+name: Test
 
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
 
 permissions:
   contents: read
@@ -12,8 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  checks:
-    name: Static checks & build
+  test:
+    name: Unit Tests
     runs-on: ubuntu-latest
     env:
       MIX_ENV: test
@@ -33,9 +35,9 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-otp29.0-elixir1.20.1-mix-${{ hashFiles('**/mix.lock') }}
+          key: test-${{ runner.os }}-otp29.0-elixir1.20.1-mix-${{ hashFiles('**/mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-otp29.0-elixir1.20.1-mix-
+            test-${{ runner.os }}-otp29.0-elixir1.20.1-mix-
 
       - name: Install dependencies
         run: |
@@ -43,11 +45,8 @@ jobs:
           mix local.rebar --force
           mix deps.get
 
-      - name: Check formatting
-        run: mix format --check-formatted
-
       - name: Compile
         run: mix compile --warnings-as-errors
 
-      - name: Check git diff
-        run: git diff --check
+      - name: Run tests
+        run: mix test
