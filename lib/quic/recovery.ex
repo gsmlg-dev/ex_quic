@@ -185,6 +185,35 @@ defmodule QUIC.Recovery do
 
   def note_received(_, _, _), do: {:error, :invalid_received_packet}
 
+  @doc "Discard an encryption space's outstanding work while preserving allocated packet numbers."
+  def discard_space(state, space) when space in @spaces do
+    current = state.spaces[space]
+
+    {sent, released} =
+      Enum.reduce(current.sent, {%{}, 0}, fn {number, packet}, {packets, bytes} ->
+        if packet.status in [:reserved, :queued, :sent] do
+          {Map.put(packets, number, %{packet | status: :discarded}), bytes + packet.bytes}
+        else
+          {Map.put(packets, number, packet), bytes}
+        end
+      end)
+
+    next = %{
+      current
+      | sent: sent,
+        pending_acks: MapSet.new(),
+        ack_ranges: [],
+        largest_received: -1
+    }
+
+    arm(%{
+      state
+      | spaces: Map.put(state.spaces, space, next),
+        congestion: NewReno.release(state.congestion, released),
+        rtt: %{state.rtt | pto_count: 0}
+    })
+  end
+
   @doc "Recompute the next deadline from actual sent packets, without advancing time."
   def arm(state) do
     loss_times =

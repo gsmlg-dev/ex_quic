@@ -10,7 +10,7 @@ defmodule QUIC.Protection do
   @retry_key Base.decode16!("be0c690b 9f66575a 1d766b54 e368c84e" |> String.replace(" ", ""),
                case: :lower
              )
-  @retry_nonce Base.decode16!("461599d35d632bf2 23a5b3f0" |> String.replace(" ", ""),
+  @retry_nonce Base.decode16!("461599d35d632bf2 239825bb" |> String.replace(" ", ""),
                  case: :lower
                )
 

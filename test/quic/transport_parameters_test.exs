@@ -3,6 +3,39 @@ defmodule QUIC.TransportParametersTest do
 
   alias QUIC.TransportParameters
 
+  test "Retry source CID must match the authenticated parameters and must be absent without Retry" do
+    {:ok, decoded} = QUIC.TransportParameters.decode(<<0, 1, 1, 15, 1, 2, 16, 1, 3>>)
+
+    opts = [
+      role: :server,
+      original_destination_connection_id: <<1>>,
+      initial_source_connection_id: <<2>>
+    ]
+
+    assert :ok =
+             QUIC.TransportParameters.validate(
+               decoded,
+               opts ++ [retry_source_connection_id: <<3>>]
+             )
+
+    assert {:error, :connection_id_mismatch} =
+             QUIC.TransportParameters.validate(
+               decoded,
+               opts ++ [retry_source_connection_id: <<4>>]
+             )
+
+    assert {:error, :unexpected_retry_source_connection_id} =
+             QUIC.TransportParameters.validate(decoded, opts ++ [retry_source_connection_id: nil])
+
+    {:ok, missing} = QUIC.TransportParameters.decode(<<0, 1, 1, 15, 1, 2>>)
+
+    assert {:error, :connection_id_mismatch} =
+             QUIC.TransportParameters.validate(
+               missing,
+               opts ++ [retry_source_connection_id: <<3>>]
+             )
+  end
+
   test "preserves ordered unknown parameters and exposes known values" do
     ordered = [
       %{id: 0x00, value: <<1, 2>>},

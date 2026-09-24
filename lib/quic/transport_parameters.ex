@@ -258,6 +258,7 @@ defmodule QUIC.TransportParameters do
 
   defp validate_cids(values, opts) do
     with :ok <- require_cid(values, Keyword.get(opts, :role)),
+         :ok <- validate_retry_cid(values, opts),
          :ok <-
            compare_cid(
              values,
@@ -292,6 +293,22 @@ defmodule QUIC.TransportParameters do
 
       true ->
         :ok
+    end
+  end
+
+  defp validate_retry_cid(values, opts) do
+    if Keyword.has_key?(opts, :retry_source_connection_id) do
+      case Keyword.get(opts, :retry_source_connection_id) do
+        nil ->
+          if Map.has_key?(values, :retry_source_connection_id),
+            do: {:error, :unexpected_retry_source_connection_id},
+            else: :ok
+
+        expected ->
+          compare_cid(values, :retry_source_connection_id, expected)
+      end
+    else
+      :ok
     end
   end
 

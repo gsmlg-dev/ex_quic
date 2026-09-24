@@ -19,6 +19,8 @@ defmodule QUIC.HandshakeScheduler do
             dcid: <<>>,
             scid: <<>>,
             original_dcid: <<>>,
+            retry_scid: nil,
+            retry_token: <<>>,
             peer_initial_scid: nil,
             peer_cids: nil,
             tls: nil,
@@ -133,6 +135,15 @@ defmodule QUIC.HandshakeScheduler do
           {:ok, t(), [map()]} | {:error, term(), t()}
   def receive_datagram(state, datagram, at \\ 0)
 
+  def receive_datagram(%__MODULE__{} = state, <<first, _::binary>> = datagram, at)
+      when (first &&& 0xF0) == 0xF0 and is_integer(at) do
+    case apply_retry(state, datagram) do
+      {:ok, next, sends} -> {:ok, next, [%{type: :retry, generated: sends}]}
+      {:error, reason} -> {:error, reason, state}
+      {:error, reason, _} -> {:error, reason, state}
+    end
+  end
+
   def receive_datagram(%__MODULE__{} = state, datagram, at)
       when is_binary(datagram) and is_integer(at) and byte_size(datagram) > 0 do
     if byte_size(datagram) > 65_527,
@@ -141,6 +152,47 @@ defmodule QUIC.HandshakeScheduler do
   end
 
   def receive_datagram(state, _datagram, _at), do: {:error, :invalid_datagram, state}
+
+  defp apply_retry(
+         %{role: :client, retry_scid: nil, peer_initial_scid: nil} = state,
+         <<_first, 1::32, rest::binary>> = packet
+       )
+       when byte_size(packet) <= 4096 do
+    with {:ok, dcid, rest} <- take_cid(rest),
+         true <- dcid == state.scid,
+         {:ok, scid, rest} <- take_cid(rest),
+         true <- byte_size(scid) > 0 and scid != state.dcid and byte_size(rest) > 16,
+         :ok <- Protection.validate_retry(state.original_dcid, packet),
+         {:ok, write_keys} <- Protection.initial_secrets(scid, :client),
+         {:ok, read_keys} <- Protection.initial_secrets(scid, :server) do
+      token = binary_part(rest, 0, byte_size(rest) - 16)
+
+      pending =
+        Enum.map(state.tls.levels.initial.sent, fn emission ->
+          %{level: :initial, offset: emission.offset, bytes: emission.bytes}
+        end)
+
+      next = %{
+        state
+        | dcid: scid,
+          retry_scid: scid,
+          retry_token: token,
+          keys: Map.put(state.keys, :initial, write_keys),
+          read_keys: read_keys,
+          recovery: Recovery.discard_space(state.recovery, :initial),
+          pending_acks: Map.delete(state.pending_acks, :initial),
+          pending: pending,
+          queued: 0
+      }
+
+      schedule(next)
+    else
+      false -> {:error, :invalid_retry}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp apply_retry(_state, _packet), do: {:error, :unexpected_retry}
 
   defp receive_coalesced(state, <<>>, _at, events, _count), do: {:ok, state, events}
 
@@ -408,6 +460,7 @@ defmodule QUIC.HandshakeScheduler do
            Codec.build_initial(%{
              dcid: state.dcid,
              scid: state.scid,
+             token: state.retry_token,
              packet_number: pn,
              packet_number_length: pn_len,
              payload: dummy_cipher
@@ -540,9 +593,26 @@ defmodule QUIC.HandshakeScheduler do
 
   defp pad_initial(state, plaintext, _keys) do
     target = max(0, state.min_initial_size)
-    overhead = 1 + 4 + 1 + byte_size(state.dcid) + 1 + byte_size(state.scid) + 1 + 1 + 2 + 16
-    needed = target - overhead - byte_size(plaintext)
-    if needed > 0, do: plaintext <> :binary.copy(<<0>>, needed), else: plaintext
+    pn = state.recovery.spaces.initial.next
+
+    size_for = fn length ->
+      {:ok, packet} =
+        Codec.build_initial(%{
+          dcid: state.dcid,
+          scid: state.scid,
+          token: state.retry_token,
+          packet_number: pn,
+          packet_number_length: packet_number_length(pn),
+          payload: :binary.copy(<<0>>, length + 16)
+        })
+
+      byte_size(packet)
+    end
+
+    length = byte_size(plaintext)
+    candidate = length + max(0, target - size_for.(length))
+    padded_length = max(length, candidate - max(0, size_for.(candidate) - target))
+    plaintext <> :binary.copy(<<0>>, padded_length - length)
   end
 
   defp packet_number_length(pn) when pn < 256, do: 1

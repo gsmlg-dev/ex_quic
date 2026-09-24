@@ -3,6 +3,9 @@ defmodule QUIC.Interop.Run do
   alias QUIC.{Endpoint, Connection}
 
   def run(mode, directory) do
+    scenario = System.get_env("INTEROP_SCENARIO", "baseline")
+    unless scenario in ["baseline", "retry"], do: raise("unsupported scenario")
+    if scenario == "retry" and mode != "client", do: raise("server Retry not yet implemented")
     File.mkdir_p!(directory)
     fixture = Path.expand("deps/ex_ssl/test/fixtures/server_flight")
 
@@ -55,6 +58,8 @@ defmodule QUIC.Interop.Run do
       Path.join(directory, "udp.jsonl")
     ]
 
+    args = if scenario == "retry", do: args ++ ["--retry"], else: args
+
     peer =
       Port.open(
         {:spawn_executable, System.find_executable("uv")},
@@ -67,6 +72,14 @@ defmodule QUIC.Interop.Run do
       if endpoint, do: {endpoint, []}, else: start_client(peer, client_tls, deadline, [])
 
     result = await(peer, endpoint, mode, deadline, messages, false)
+    observed_retry = Enum.any?(result.events, &match?(%{"event" => "retry"}, &1))
+
+    result =
+      Map.merge(result, %{
+        scenario: scenario,
+        passed: result.passed and (scenario != "retry" or observed_retry)
+      })
+
     File.write!(Path.join(directory, "result.json"), JSON.encode!(result))
     IO.puts(JSON.encode!(result))
     if Port.info(peer), do: Port.command(peer, "stop\n")

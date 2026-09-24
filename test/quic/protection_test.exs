@@ -4,6 +4,17 @@ defmodule QUIC.ProtectionTest do
 
   @dcid Base.decode16!("8394c8f03e515708", case: :lower)
 
+  test "Retry integrity matches RFC 9001 Appendix A.4" do
+    original = Base.decode16!("8394c8f03e515708", case: :lower)
+
+    packet =
+      Base.decode16!("ff000000010008f067a5502a4262b5746f6b656e04a265ba2eff4d829058fb3f0f2496ba",
+        case: :lower
+      )
+
+    assert :ok = QUIC.Protection.validate_retry(original, packet)
+  end
+
   test "ChaCha header protection matches the RFC 8439 section 2.3.2 block" do
     key = :binary.list_to_bin(Enum.to_list(0..31))
     nonce = Base.decode16!("000000090000004A00000000")

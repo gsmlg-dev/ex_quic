@@ -29,6 +29,8 @@ class Capture:
         self.file = open(path, "w")
 
     def packet(self, direction, data, peer):
+        if data and data[0] & 0xF0 == 0xF0:
+            emit(event="retry", direction=direction)
         self.file.write(json.dumps(dict(time_ns=time.monotonic_ns(), direction=direction,
             peer=peer, payload=base64.b64encode(data).decode())) + "\n")
         self.file.flush()

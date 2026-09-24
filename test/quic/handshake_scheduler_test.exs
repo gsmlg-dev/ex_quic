@@ -101,7 +101,8 @@ defmodule QUIC.HandshakeSchedulerTest do
   defp new(opts \\ []) do
     HandshakeScheduler.new(
       :client,
-      [dcid: <<1, 2, 3, 4>>, scid: <<5, 6, 7, 8>>, adapter: Recorded, min_initial_size: 0] ++ opts
+      [dcid: <<1, 2, 3, 4>>, scid: <<5, 6, 7, 8>>, adapter: Recorded, min_initial_size: 0]
+      |> Keyword.merge(opts)
     )
   end
 
@@ -113,6 +114,44 @@ defmodule QUIC.HandshakeSchedulerTest do
       adapter: adapter,
       min_initial_size: 0
     )
+  end
+
+  test "Retry authenticates the original CID and reuses TLS bytes under fresh packet numbers" do
+    {:ok, state, [first]} = new(min_initial_size: 1200)
+    {:ok, state, [:sent]} = HandshakeScheduler.local_send(state, :initial, 0, :ok, 0)
+    retry_cid = <<9, 10, 11, 12>>
+    token = :binary.copy(<<42>>, 200)
+
+    body =
+      <<0xF0, 1::32, byte_size(state.scid), state.scid::binary, byte_size(retry_cid),
+        retry_cid::binary, token::binary>>
+
+    {:ok, tag} = Protection.retry_tag(state.original_dcid, body)
+    retry = body <> tag
+
+    {:ok, next, [%{type: :retry, generated: [resent]}]} =
+      HandshakeScheduler.receive_datagram(state, retry, 1)
+
+    assert next.tls == state.tls
+    assert next.original_dcid == state.original_dcid
+    assert next.retry_scid == retry_cid
+    assert next.recovery.spaces.initial.sent[0].status == :discarded
+    assert resent.packet_number == first.packet_number + 1
+    assert byte_size(resent.bytes) >= 1200
+    {:ok, parsed} = Codec.parse_initial(resent.bytes)
+    assert parsed.token == token
+    assert parsed.dcid == retry_cid
+    {:ok, expected} = Protection.initial_secrets(retry_cid, :client)
+    assert next.keys.initial == expected
+
+    assert {:error, :unexpected_retry, ^next} =
+             HandshakeScheduler.receive_datagram(next, retry, 2)
+
+    <<last, tail::binary>> = tag
+    corrupted = body <> <<Bitwise.bxor(last, 1), tail::binary>>
+
+    assert {:error, :invalid_retry_tag, ^state} =
+             HandshakeScheduler.receive_datagram(state, corrupted, 1)
   end
 
   test "installs directional QUIC keys from recorded TLS secrets" do

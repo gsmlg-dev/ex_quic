@@ -196,7 +196,12 @@ defmodule QUIC.Connection do
             {scheduler, budget}
           end
 
-        data = %{data | scheduler: scheduler, budget: budget}
+        pending =
+          if Enum.any?(events, &(&1.type == :retry)),
+            do: Enum.reject(data.pending, &(&1.level == :initial)),
+            else: data.pending
+
+        data = %{data | scheduler: scheduler, budget: budget, pending: pending}
         effects = Enum.flat_map(events, &Map.get(&1, :generated, []))
 
         if Enum.any?(events, &(&1.type in [:connection_close, :application_close])) do
@@ -257,6 +262,7 @@ defmodule QUIC.Connection do
              TransportParameters.validate(parameters,
                role: peer_role,
                initial_source_connection_id: scheduler.peer_initial_scid,
+               retry_source_connection_id: scheduler.retry_scid,
                original_destination_connection_id:
                  if(peer_role == :server, do: scheduler.original_dcid)
              ) do
