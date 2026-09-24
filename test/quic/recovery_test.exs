@@ -190,6 +190,35 @@ defmodule QUIC.RecoveryTest do
     assert {:initial, 0} in lost
     assert state.spaces.initial.sent[0].status == :lost
   end
+
+  test "reclaims acknowledged history at the explicit bound without reusing numbers" do
+    state = Recovery.new(max_sent_packets: 2)
+    {state, first} = sent(state, :application, 10, 0)
+
+    {:ok, state, _} =
+      Recovery.receive_ack(state, :application, %{largest: first, ranges: [{first, first}]}, 10)
+
+    {state, second} = sent(state, :application, 10, 20)
+
+    {:ok, state, _} =
+      Recovery.receive_ack(
+        state,
+        :application,
+        %{largest: second, ranges: [{second, second}]},
+        30
+      )
+
+    assert {:ok, state, third} = Recovery.reserve(state, :application, %{}, 10)
+    assert third.number == 2
+    assert map_size(state.spaces.application.sent) <= 2
+    refute Map.has_key?(state.spaces.application.sent, first)
+  end
+
+  test "does not reclaim active or lost packets when history is full" do
+    state = Recovery.new(max_sent_packets: 1)
+    {state, _number} = sent(state, :application, 10, 0)
+    assert {:error, :sent_history_limit} = Recovery.reserve(state, :application, %{}, 10)
+  end
 end
 
 defmodule QUIC.Congestion.NewRenoTest do

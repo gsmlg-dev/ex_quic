@@ -36,7 +36,12 @@ cancels its handshake deadline; it does not imply streams or HTTP/3 support.
   and requires successful confirmation afterward.
 - `test/quic/recovery_test.exs`: distinct send/receive histories, packet and time
   threshold loss, PTO without false loss, deadline cancellation, independent
-  spaces and delayed receipt/ACK accounting.
+  spaces, delayed receipt/ACK accounting, and bounded terminal sent-history
+  reclamation without packet-number reuse.
+- `test/quic/handshake_scheduler_test.exs`: large TLS CRYPTO flights are split
+  against the actual protected packet size with contiguous offsets and fresh,
+  monotonically increasing packet numbers; each fragment remains retained for
+  retransmission without another TLS call.
 - `test/quic/protection_test.exs`: fixed short-header mask regression (five low
   bits for short headers, four for long headers).
 
@@ -56,16 +61,17 @@ rejection. These bounded scenarios do not complete the wider M3/M6 lifecycle gat
 Initial/Handshake key and buffer retirement is implemented and independently
 regressed; see [retirement evidence](m3-key-retirement.md).
 Before broader endpoint acceptance, also review strict packet
-header/CID and frame legality, large CRYPTO flight fragmentation, congestion-full
-PTO behavior, recovery edge cases, established idle/closing/draining lifetime,
-and sent-history reclamation. Current bounded resource limits can terminate a
-connection rather than silently extend unsupported behavior. Streams/profiles,
+header/CID and frame legality, congestion-full PTO behavior, recovery edge
+cases, and established idle/closing/draining lifetime. Current bounded resource
+limits can terminate a connection rather than silently extend unsupported
+behavior. Streams/profiles,
 path migration and Abyss integration are not part of this runtime increment.
 
 ## Local validation record
 
 2026-09-24, macOS, Elixir 1.20.1 / Erlang OTP 29 (ERTS 17.0.2):
 `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mix test`
-(91 tests, seed 466101), and staged `git diff --cached --check` exited 0.
+(124 tests, seed 469913), and `git diff --check` exited 0. Focused recovery and
+scheduler tests (30 tests, seed 892292) also exited 0.
 Independent-peer tests, CI runtime combinations and packet captures were not run
 for this increment.

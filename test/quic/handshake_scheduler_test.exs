@@ -98,6 +98,17 @@ defmodule QUIC.HandshakeSchedulerTest do
       do: {:error, %{kind: :quic, reason: :unexpected_level}, state, []}
   end
 
+  defmodule LargeFlight do
+    defstruct [:phase]
+
+    def new(_, _),
+      do: {:ok, %__MODULE__{phase: :initial}, [{:emit, :initial, :binary.copy(<<7>>, 4000)}]}
+
+    def info(%__MODULE__{phase: phase}), do: %{receive_level: phase}
+    def abort(state, _), do: state
+    def feed(state, _level, _bytes), do: {:ok, state, []}
+  end
+
   defp new(opts \\ []) do
     HandshakeScheduler.new(
       :client,
@@ -152,6 +163,39 @@ defmodule QUIC.HandshakeSchedulerTest do
 
     assert {:error, :invalid_retry_tag, ^state} =
              HandshakeScheduler.receive_datagram(state, corrupted, 1)
+  end
+
+  test "fragments a large TLS flight with contiguous offsets and bounded packets" do
+    assert {:ok, state, effects} =
+             HandshakeScheduler.new(
+               :client,
+               dcid: <<1, 2, 3, 4>>,
+               scid: <<5, 6, 7, 8>>,
+               adapter: LargeFlight,
+               max_packet_size: 1300,
+               min_initial_size: 1200
+             )
+
+    sends = Enum.filter(effects, &(&1.type == :send))
+    assert length(sends) > 2
+    assert Enum.all?(sends, &(byte_size(&1.bytes) <= 1300))
+    assert Enum.map(sends, & &1.packet_number) == Enum.to_list(0..(length(sends) - 1))
+
+    ranges =
+      sends
+      |> Enum.map(fn send ->
+        packet = state.recovery.spaces.initial.sent[send.packet_number]
+        packet.metadata.crypto
+      end)
+      |> Enum.sort()
+
+    assert hd(ranges) == {0, elem(Enum.at(ranges, 0), 1)}
+
+    assert ranges
+           |> Enum.chunk_every(2, 1, :discard)
+           |> Enum.all?(fn [{offset, length}, {next, _}] -> offset + length == next end)
+
+    assert Enum.reduce(ranges, 0, fn {_offset, length}, total -> total + length end) == 4000
   end
 
   test "installs directional QUIC keys from recorded TLS secrets" do

@@ -82,21 +82,24 @@ defmodule QUIC.Recovery do
       s.retired ->
         {:error, :retired_space}
 
-      map_size(s.sent) >= state.max_sent_packets ->
-        {:error, :sent_history_limit}
-
       true ->
-        with {:ok, congestion} <- NewReno.reserve(state.congestion, bytes) do
-          packet = %Packet{
-            number: s.next,
-            space: space,
-            status: :reserved,
-            bytes: bytes,
-            metadata: metadata
-          }
+        s = prune_terminal_history(s, state.max_sent_packets)
 
-          state = %{state | congestion: congestion}
-          {:ok, put_packet(state, space, packet, %{s | next: s.next + 1}), packet}
+        if map_size(s.sent) >= state.max_sent_packets do
+          {:error, :sent_history_limit}
+        else
+          with {:ok, congestion} <- NewReno.reserve(state.congestion, bytes) do
+            packet = %Packet{
+              number: s.next,
+              space: space,
+              status: :reserved,
+              bytes: bytes,
+              metadata: metadata
+            }
+
+            state = %{state | congestion: congestion}
+            {:ok, put_packet(state, space, packet, %{s | next: s.next + 1}), packet}
+          end
         end
     end
   end
@@ -336,6 +339,19 @@ defmodule QUIC.Recovery do
             | sent: Map.put(space_state.sent, packet.number, packet)
           })
     }
+
+  defp prune_terminal_history(space, limit) do
+    if map_size(space.sent) < limit do
+      space
+    else
+      retained =
+        Enum.reject(space.sent, fn {_number, packet} ->
+          packet.status in [:acked, :failed, :discarded]
+        end)
+
+      %{space | sent: Map.new(retained)}
+    end
+  end
 
   defp fetch_packet(state, space, number) do
     case state.spaces[space].sent[number] do

@@ -387,25 +387,90 @@ defmodule QUIC.HandshakeScheduler do
         end
 
       [emission | rest] ->
-        if state.queued >= state.max_queue do
-          {:error, :send_queue_limit, state}
-        else
-          case protect_and_reserve(state, emission) do
-            {:ok, state, effect} ->
-              case schedule(%{
-                     state
-                     | pending: rest,
-                       effects: [effect | state.effects],
-                       queued: state.queued + 1
-                   }) do
-                {:ok, state, effects} -> {:ok, state, [effect | effects]}
-                error -> error
-              end
+        case fragment_pending(state, emission) do
+          {:split, first, second} ->
+            schedule(%{state | pending: [first, second | rest]})
 
-            {:error, reason, state} ->
-              {:error, reason, state}
-          end
+          {:error, reason} ->
+            {:error, reason, state}
+
+          :ok ->
+            if state.queued >= state.max_queue do
+              {:error, :send_queue_limit, state}
+            else
+              case protect_and_reserve(state, emission) do
+                {:ok, state, effect} ->
+                  case schedule(%{
+                         state
+                         | pending: rest,
+                           effects: [effect | state.effects],
+                           queued: state.queued + 1
+                       }) do
+                    {:ok, state, effects} -> {:ok, state, [effect | effects]}
+                    error -> error
+                  end
+
+                {:error, reason, state} ->
+                  {:error, reason, state}
+              end
+            end
         end
+    end
+  end
+
+  # Fit each CRYPTO range against the actual protected packet.  The probe does
+  # not reserve a packet number or call TLS, and therefore cannot consume
+  # congestion credit or alter retransmission state.
+  defp fragment_pending(_state, %{bytes: <<>>}), do: :ok
+
+  defp fragment_pending(state, %{level: level, offset: offset, bytes: bytes} = emission)
+       when is_binary(bytes) do
+    key_context = Map.get(state.keys, level)
+
+    case build_protected(state, level, offset, bytes, key_context) do
+      {:ok, packet} when byte_size(packet) <= state.max_packet_size ->
+        :ok
+
+      {:ok, _oversize} ->
+        fit = largest_fitting_fragment(state, emission, key_context)
+
+        if fit > 0 and fit < byte_size(bytes) do
+          first = %{emission | bytes: binary_part(bytes, 0, fit)}
+
+          second = %{
+            emission
+            | offset: offset + fit,
+              bytes: binary_part(bytes, fit, byte_size(bytes) - fit)
+          }
+
+          {:split, first, second}
+        else
+          {:error, :packet_size_limit}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp largest_fitting_fragment(state, %{level: level, offset: offset, bytes: bytes}, keys) do
+    do_largest_fitting(state, level, offset, bytes, keys, 1, byte_size(bytes), 0)
+  end
+
+  defp do_largest_fitting(_state, _level, _offset, _bytes, _keys, low, high, best)
+       when low > high,
+       do: best
+
+  defp do_largest_fitting(state, level, offset, bytes, keys, low, high, best) do
+    mid = div(low + high, 2)
+    candidate = binary_part(bytes, 0, mid)
+
+    case build_protected(state, level, offset, candidate, keys) do
+      {:ok, packet} when byte_size(packet) <= state.max_packet_size ->
+        do_largest_fitting(state, level, offset, bytes, keys, mid + 1, high, mid)
+
+      _ ->
+        do_largest_fitting(state, level, offset, bytes, keys, low, mid - 1, best)
     end
   end
 
