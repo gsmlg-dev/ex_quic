@@ -136,7 +136,8 @@ defmodule QUIC.Protection do
       with {:ok, mask} <- header_protection_mask(hp, sample, algorithm),
            <<first, header_rest::binary-size(^header_rest_size), rest::binary>> <- packet do
         mask_first = :binary.decode_unsigned(binary_part(mask, 0, 1))
-        first = bxor(first, mask_first &&& 0x0F)
+        first_mask = if (first &&& 0x80) == 0, do: 0x1F, else: 0x0F
+        first = bxor(first, mask_first &&& first_mask)
         pn_len = (first &&& 3) + 1
 
         if byte_size(rest) < pn_len do

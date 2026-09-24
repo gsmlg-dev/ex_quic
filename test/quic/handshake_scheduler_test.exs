@@ -282,6 +282,36 @@ defmodule QUIC.HandshakeSchedulerTest do
     assert sender.recovery.spaces.initial.sent[0].status == :queued
   end
 
+  test "coalesced packets advance offsets in order and retain an accepted prefix on trailing corruption" do
+    {:ok, sender, [first]} = new()
+    {:ok, _sender, [second]} = HandshakeScheduler.feed(sender, :initial, 0, <<9>>)
+    {:ok, keys} = Protection.initial_secrets(<<1, 2, 3, 4>>, :client)
+
+    {:ok, receiver, []} =
+      HandshakeScheduler.new(:client,
+        dcid: <<1, 2, 3, 4>>,
+        scid: <<5, 6, 7, 8>>,
+        adapter: InboundRecorded,
+        initial_read_keys: keys,
+        min_initial_size: 0
+      )
+
+    assert {:ok, next, events} =
+             HandshakeScheduler.receive_datagram(receiver, first.bytes <> second.bytes, 10)
+
+    assert next.tls.tls.received == [<<1, 2>>, <<3>>]
+    assert [%{type: :crypto, offset: 0}, %{type: :crypto, offset: 2}] = events
+
+    assert {:ok, prefix, events} =
+             HandshakeScheduler.receive_datagram(receiver, first.bytes <> <<1>>, 10)
+
+    assert prefix.tls.tls.received == [<<1, 2>>]
+    assert [%{type: :crypto}, %{type: :discard, reason: :truncated_header}] = events
+
+    assert {:error, :datagram_size_limit, ^receiver} =
+             HandshakeScheduler.receive_datagram(receiver, :binary.copy(<<0>>, 65_528), 10)
+  end
+
   test "bad tags and malformed packets leave scheduler state unchanged" do
     assert {:ok, sender, [effect]} = new()
     {:ok, initial_read} = Protection.initial_secrets(<<1, 2, 3, 4>>, :client)

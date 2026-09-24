@@ -56,9 +56,11 @@ defmodule QUIC.Runtime do
 
   defmodule IO do
     @moduledoc """
-    Behaviour for externally owned sockets and deterministic tests.
+    Legacy behaviour for externally owned sockets and deterministic tests.
+    Successful sends return actual completion time in monotonic microseconds,
+    matching `QUIC.IO`.
     """
-    @callback send(term(), binary(), term()) :: {:ok, reference()} | {:error, term()}
+    @callback send(term(), binary(), term()) :: {:ok, integer()} | {:error, term()}
     @callback monotonic_time() :: integer()
   end
 end

@@ -4,6 +4,17 @@ defmodule QUIC.ProtectionTest do
 
   @dcid Base.decode16!("8394c8f03e515708", case: :lower)
 
+  test "short headers unmask all five low bits including bit four" do
+    # AES-128 with zero key and block 1 gives 58e2fccefa7e3061367f1d57a4e7455a.
+    # The fifth low mask bit is set, exposing a long-header mask used on a short header.
+    sample = <<1::128>>
+    protected = <<0x58, 1, 2, 3, 4, 0xE2, 0, 0, 0, sample::binary>>
+    expected = <<0x40, 1, 2, 3, 4, 0, 0, 0, 0, sample::binary>>
+
+    assert {:ok, ^expected, 1} =
+             QUIC.Protection.remove_header_protection(protected, 5, <<0::128>>, :aes_128_gcm)
+  end
+
   test "RFC 9001 Initial client vectors" do
     assert {:ok, keys} = QUIC.Protection.initial_secrets(@dcid, :client)
 

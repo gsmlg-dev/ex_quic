@@ -91,19 +91,47 @@ defmodule QUIC.RecoveryTest do
              Recovery.receive_ack(state, :initial, %{largest: 4, ranges: [{4, 4}]}, 32)
   end
 
-  test "time-threshold loss and PTO use explicit timestamps" do
-    {state, _} = sent(Recovery.new(max_ack_delay: 10_000), :handshake, 100, 0)
+  test "PTO probes without declaring unacknowledged flights lost" do
+    {state, _} = sent(Recovery.new(), :handshake, 100, 0)
+    assert state.deadline == 999_000
+    {:ok, early, %{lost: [], probes: []}} = Recovery.on_time(state, 500_000)
+    assert early.deadline == state.deadline
 
-    {:ok, state, %{lost: [{:handshake, 0}], generation: generation, pto: pto}} =
-      Recovery.on_time(state, 500_000)
+    {:ok, next, %{lost: [], probes: [{:handshake, 0}], generation: generation}} =
+      Recovery.on_time(early, 999_000)
 
+    assert next.spaces.handshake.sent[0].status == :sent
+    assert next.congestion == state.congestion
+    assert next.deadline == 1_998_000
+    refute Recovery.timer_expired?(next, early.timer_generation, 2_000_000)
+    assert Recovery.timer_expired?(next, generation, 2_000_000)
+  end
+
+  test "time threshold loss requires a higher acknowledged packet in the same space" do
+    {state, _} = sent(Recovery.new(), :handshake, 100, 0)
+    {state, _} = sent(state, :handshake, 100, 1)
+    {state, _} = sent(state, :initial, 100, 0)
+
+    {:ok, state, _} =
+      Recovery.receive_ack(state, :handshake, %{largest: 1, ranges: [{1, 1}]}, 100_000)
+
+    {:ok, state, %{lost: [{:handshake, 0}], probes: []}} = Recovery.on_time(state, 150_000)
+    assert state.spaces.initial.sent[0].status == :sent
     assert state.spaces.handshake.sent[0].status == :lost
-    assert pto > 500_000
-    assert Recovery.timer_expired?(state, generation, pto)
-    {:ok, next, %{generation: next_generation}} = Recovery.on_time(state, pto)
-    assert next_generation > generation
-    assert next.deadline > pto
-    refute Recovery.timer_expired?(next, generation, pto)
+  end
+
+  test "ACK-only sends do not arm PTO and acknowledging all data cancels its timer" do
+    state = Recovery.new()
+    {:ok, state, packet} = Recovery.reserve(state, :initial, %{ack_eliciting: false}, 0)
+    {:ok, state, _} = Recovery.local_send(state, :initial, packet.number, :ok, 0)
+    assert state.deadline == nil
+    {state, number} = sent(state, :handshake, 100, 10)
+    assert is_integer(state.deadline)
+
+    {:ok, state, _} =
+      Recovery.receive_ack(state, :handshake, %{largest: number, ranges: [{number, number}]}, 100)
+
+    assert state.deadline == nil
   end
 
   test "packet threshold loss is independent from other spaces" do

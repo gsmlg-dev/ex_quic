@@ -18,12 +18,15 @@ defmodule QUIC.HandshakeScheduler do
   defstruct role: nil,
             dcid: <<>>,
             scid: <<>>,
+            original_dcid: <<>>,
+            peer_initial_scid: nil,
             tls: nil,
             recovery: nil,
             keys: %{},
             read_keys: %{},
             pending: [],
             pending_acks: %{},
+            pending_control: %{},
             effects: [],
             max_packet_size: @default_max_packet,
             min_initial_size: 1200,
@@ -38,7 +41,7 @@ defmodule QUIC.HandshakeScheduler do
   def new(role, opts) when role in [:client, :server] do
     with {:ok, dcid} <- required_cid(opts, :dcid),
          {:ok, scid} <- required_cid(opts, :scid),
-         {:ok, initial} <- initial_keys(opts, dcid, role),
+         {:ok, initial} <- initial_keys(opts, Keyword.get(opts, :original_dcid, dcid), role),
          {:ok, tls, tls_effects} <- TLSDriver.new(role, tls_options(opts)) do
       recovery = Keyword.get(opts, :recovery, Recovery.new())
 
@@ -46,10 +49,12 @@ defmodule QUIC.HandshakeScheduler do
         role: role,
         dcid: dcid,
         scid: scid,
+        original_dcid: Keyword.get(opts, :original_dcid, dcid),
         tls: tls,
         recovery: recovery,
         keys: Map.put(Keyword.get(opts, :keys, %{}), :initial, initial),
-        read_keys: initial_read_keys(opts, dcid, role, initial),
+        read_keys:
+          initial_read_keys(opts, Keyword.get(opts, :original_dcid, dcid), role, initial),
         max_packet_size: Keyword.get(opts, :max_packet_size, @default_max_packet),
         min_initial_size: Keyword.get(opts, :min_initial_size, 1200),
         max_queue: Keyword.get(opts, :max_queue, 64)
@@ -98,7 +103,7 @@ defmodule QUIC.HandshakeScheduler do
 
   @doc "Queue an ACK frame for the next packet in a packet-number space."
   def queue_ack(%__MODULE__{} = state, space, ack) when space in @spaces and is_map(ack) do
-    %{state | pending_acks: Map.update(state.pending_acks, space, [ack], &(&1 ++ [ack]))}
+    %{state | pending_acks: Map.put(state.pending_acks, space, [ack])}
   end
 
   def queue_ack(state, _, _), do: state
@@ -122,26 +127,51 @@ defmodule QUIC.HandshakeScheduler do
     end
   end
 
-  @doc "Receive one authenticated protected QUIC packet without socket/runtime effects."
+  @doc "Process bounded coalesced packets in order, preserving an accepted prefix."
   @spec receive_datagram(t(), binary(), integer()) ::
           {:ok, t(), [map()]} | {:error, term(), t()}
   def receive_datagram(state, datagram, at \\ 0)
 
   def receive_datagram(%__MODULE__{} = state, datagram, at)
-      when is_binary(datagram) and is_integer(at) do
-    original = state
-
-    with {:ok, packet} <- decode_protected_packet(state, datagram),
-         {:ok, recovery} <- Recovery.note_received(state.recovery, packet.space, packet.number),
-         {:ok, next, events} <- dispatch_inbound(%{state | recovery: recovery}, packet, at) do
-      {:ok, next, events}
-    else
-      {:error, reason} -> {:error, reason, original}
-      {:error, reason, _state} -> {:error, reason, original}
-    end
+      when is_binary(datagram) and is_integer(at) and byte_size(datagram) > 0 do
+    if byte_size(datagram) > 65_527,
+      do: {:error, :datagram_size_limit, state},
+      else: receive_coalesced(state, datagram, at, [], 0)
   end
 
   def receive_datagram(state, _datagram, _at), do: {:error, :invalid_datagram, state}
+
+  defp receive_coalesced(state, <<>>, _at, events, _count), do: {:ok, state, events}
+
+  defp receive_coalesced(state, _rest, _at, events, 32),
+    do: {:ok, state, events ++ [%{type: :discard, reason: :packet_count_limit}]}
+
+  defp receive_coalesced(state, bytes, at, events, count) do
+    result =
+      with {:ok, packet} <- decode_protected_packet(state, bytes),
+           {:ok, recovery} <- Recovery.note_received(state.recovery, packet.space, packet.number),
+           {:ok, next, generated} <-
+             dispatch_inbound(learn_peer_cid(%{state | recovery: recovery}, packet), packet, at) do
+        {:ok, next, generated, packet.packet_length}
+      end
+
+    case result do
+      {:ok, next, generated, length} ->
+        <<_packet::binary-size(^length), rest::binary>> = bytes
+        receive_coalesced(next, rest, at, events ++ generated, count + 1)
+
+      {:error, reason} ->
+        coalesced_error(state, events, count, reason)
+
+      {:error, reason, _state} ->
+        coalesced_error(state, events, count, reason)
+    end
+  end
+
+  defp coalesced_error(state, _events, 0, reason), do: {:error, reason, state}
+
+  defp coalesced_error(state, events, _count, reason),
+    do: {:ok, state, events ++ [%{type: :discard, reason: reason}]}
 
   @doc "Alias for callers that process one packet rather than a datagram batch."
   def receive_packet(state, packet, at \\ 0), do: receive_datagram(state, packet, at)
@@ -174,6 +204,10 @@ defmodule QUIC.HandshakeScheduler do
           })
         end
 
+      %Recovery.Packet{status: status, metadata: %{control: [_ | _] = frames}}
+      when status in [:sent, :lost, :failed] ->
+        schedule(%{state | pending_control: Map.put(state.pending_control, space, frames)})
+
       nil ->
         {:error, :unknown_packet}
 
@@ -182,12 +216,25 @@ defmodule QUIC.HandshakeScheduler do
     end
   end
 
+  @doc "Send HANDSHAKE_DONE after the server completes its TLS handshake."
+  def handshake_done(%{role: :server, tls: %{facts: %{tls_complete: true}}} = state) do
+    schedule(%{
+      state
+      | pending_control: Map.put(state.pending_control, :application, [%{type: :handshake_done}])
+    })
+  end
+
+  def handshake_done(_), do: {:error, :handshake_not_complete}
+
   @doc "Schedule all currently pending emissions and queued ACKs."
   @spec schedule(t()) :: {:ok, t(), list()} | {:error, term(), t()}
   def schedule(%__MODULE__{} = state) do
     case state.pending do
       [] ->
-        case Enum.find(@spaces, &Map.has_key?(state.pending_acks, &1)) do
+        case Enum.find(
+               @spaces,
+               &(Map.has_key?(state.pending_acks, &1) or Map.has_key?(state.pending_control, &1))
+             ) do
           nil ->
             {:ok, state, []}
 
@@ -267,6 +314,8 @@ defmodule QUIC.HandshakeScheduler do
   defp protect_and_reserve(state, %{level: level, offset: offset, bytes: bytes}) do
     space = level
     key_context = Map.get(state.keys, level)
+    control = Map.get(state.pending_control, level, [])
+    ack_eliciting = bytes != <<>> or control != []
 
     with {:ok, packet} <- build_protected(state, level, offset, bytes, key_context),
          :ok <-
@@ -278,8 +327,14 @@ defmodule QUIC.HandshakeScheduler do
            Recovery.reserve(
              state.recovery,
              space,
-             %{level: level, crypto: {offset, byte_size(bytes)}, bytes: packet},
-             byte_size(packet)
+             %{
+               level: level,
+               crypto: {offset, byte_size(bytes)},
+               bytes: packet,
+               control: control,
+               ack_eliciting: ack_eliciting
+             },
+             if(ack_eliciting or level == :initial, do: byte_size(packet), else: 0)
            ),
          {:ok, recovery} <- Recovery.transition(recovery, space, reserved.number, :queued) do
       metadata = Map.put(reserved.metadata, :packet_number, reserved.number)
@@ -288,7 +343,8 @@ defmodule QUIC.HandshakeScheduler do
       next_state = %{
         state
         | recovery: recovery,
-          pending_acks: Map.delete(state.pending_acks, space)
+          pending_acks: Map.delete(state.pending_acks, space),
+          pending_control: Map.delete(state.pending_control, space)
       }
 
       {:ok, next_state,
@@ -322,7 +378,9 @@ defmodule QUIC.HandshakeScheduler do
     write_keys = Map.get(keys, :write)
 
     if is_map(write_keys) do
-      ack_frames = Map.get(state.pending_acks, level, [])
+      ack_frames =
+        Map.get(state.pending_acks, level, []) ++ Map.get(state.pending_control, level, [])
+
       crypto = %{type: :crypto, offset: offset, data: bytes}
 
       with {:ok, ack_bytes} <- Codec.encode_frames(ack_frames),
@@ -385,6 +443,7 @@ defmodule QUIC.HandshakeScheduler do
   end
 
   defp encrypt_long(state, keys, packet_type, pn, pn_len, plaintext) do
+    plaintext = sample_padding(plaintext, pn_len)
     dummy_cipher = <<0::size((byte_size(plaintext) + 16) * 8)>>
 
     with {:ok, length} <- Codec.encode_varint(byte_size(dummy_cipher) + pn_len),
@@ -414,6 +473,8 @@ defmodule QUIC.HandshakeScheduler do
   end
 
   defp encrypt_short(state, keys, pn, pn_len, plaintext) do
+    plaintext = sample_padding(plaintext, pn_len)
+
     with header <- <<0x40 ||| pn_len - 1, state.dcid::binary>>,
          aad <- header <> <<pn::unsigned-big-integer-size(pn_len * 8)>>,
          {:ok, ciphertext} <- Protection.aead_encrypt(keys.key, keys.iv, pn, aad, plaintext),
@@ -436,6 +497,15 @@ defmodule QUIC.HandshakeScheduler do
       _ -> {:error, :protection_failed}
     end
   end
+
+  defp sample_padding(bytes, pn_len) do
+    bytes <> :binary.copy(<<0>>, max(0, 4 - pn_len - byte_size(bytes)))
+  end
+
+  defp learn_peer_cid(%{peer_initial_scid: nil} = state, %{level: :initial, scid: scid}),
+    do: %{state | peer_initial_scid: scid, dcid: scid}
+
+  defp learn_peer_cid(state, _), do: state
 
   defp mask_packet_number(bytes, mask, index) do
     for {byte, i} <- Enum.with_index(:binary.bin_to_list(bytes)), into: <<>> do
@@ -541,6 +611,7 @@ defmodule QUIC.HandshakeScheduler do
     opts
     |> Keyword.drop([
       :dcid,
+      :original_dcid,
       :scid,
       :initial_keys,
       :keys,
@@ -558,9 +629,31 @@ defmodule QUIC.HandshakeScheduler do
          at
        ) do
     case Codec.decode_frames(plaintext) do
-      {:ok, frames, <<>>} -> dispatch_frames(state, level, space, number, frames, at, [])
-      {:ok, _frames, _tail} -> {:error, :trailing_frame_bytes}
-      {:error, reason} -> {:error, {:malformed_frame, reason}}
+      {:ok, frames, <<>>} ->
+        state =
+          if Enum.any?(
+               frames,
+               &(&1.type not in [:ack, :padding, :connection_close, :application_close])
+             ) do
+            received = state.recovery.spaces[space]
+
+            queue_ack(state, space, %{
+              type: :ack,
+              largest: received.largest_received,
+              delay: 0,
+              ranges: Enum.reverse(received.ack_ranges)
+            })
+          else
+            state
+          end
+
+        dispatch_frames(state, level, space, number, frames, at, [])
+
+      {:ok, _frames, _tail} ->
+        {:error, :trailing_frame_bytes}
+
+      {:error, reason} ->
+        {:error, {:malformed_frame, reason}}
     end
   end
 
@@ -596,7 +689,15 @@ defmodule QUIC.HandshakeScheduler do
         end
 
       %{type: :handshake_done} when level == :application ->
-        dispatch_frames(state, level, space, number, rest, at, [%{type: :handshake_done} | events])
+        if state.role == :client and state.tls.facts.tls_complete do
+          next = %{state | tls: TLSDriver.mark_quic_confirmed(state.tls)}
+
+          dispatch_frames(next, level, space, number, rest, at, [
+            %{type: :handshake_done} | events
+          ])
+        else
+          {:error, :unexpected_handshake_done}
+        end
 
       %{type: :handshake_done} ->
         {:error, {:wrong_encryption_level, :handshake_done, level}}
@@ -693,7 +794,14 @@ defmodule QUIC.HandshakeScheduler do
          pn_offset <- byte_size(packet) - byte_size(after_length),
          {:ok, level} <- long_level(type) do
       {:ok,
-       %{level: level, space: level, pn_offset: pn_offset, packet_length: pn_offset + length}}
+       %{
+         level: level,
+         space: level,
+         dcid: dcid,
+         scid: scid,
+         pn_offset: pn_offset,
+         packet_length: pn_offset + length
+       }}
     else
       false -> {:error, :truncated_packet}
       {:error, _} = error -> error

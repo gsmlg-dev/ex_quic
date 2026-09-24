@@ -24,6 +24,7 @@ defmodule QUIC.TLSDriver do
       tls_complete: false,
       peer_authenticated: false,
       peer_transport_parameters: nil,
+      peer_parameters_authenticated: false,
       address_validated: false,
       quic_confirmed: false
     }
@@ -256,9 +257,15 @@ defmodule QUIC.TLSDriver do
         {:peer_authenticated, _} ->
           {:cont, {:ok, put_in(current.facts.peer_authenticated, true), effects ++ [action]}}
 
-        {:peer_transport_parameters, bytes, _status} when is_binary(bytes) ->
-          {:cont,
-           {:ok, put_in(current.facts.peer_transport_parameters, bytes), effects ++ [action]}}
+        {:peer_transport_parameters, bytes, status}
+        when is_binary(bytes) and status in [:unverified, :authenticated] ->
+          facts = %{
+            current.facts
+            | peer_transport_parameters: bytes,
+              peer_parameters_authenticated: status == :authenticated
+          }
+
+          {:cont, {:ok, %{current | facts: facts}, effects ++ [action]}}
 
         %SSL.QUIC.Secret{} ->
           {:cont, {:ok, current, effects ++ [action]}}

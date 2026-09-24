@@ -1,6 +1,6 @@
-# ex_quic — implementation startup package, revision 3
+# ex_quic — experimental QUIC v1 library
 
-This package is an implementation specification, **not an implemented QUIC library**. It follows the incremental acceptance of `ex_ssl` v0.7.1 at `02eb981f59d4e182d4473e264a9f8b093ec6bf3d` on 2026-09-23.
+This repository contains an incremental Elixir QUIC implementation and its revision 3 design. Independent network interoperability remains unverified. It uses `ex_ssl` v0.7.1 at `02eb981f59d4e182d4473e264a9f8b093ec6bf3d` on 2026-09-23.
 
 The project has three mandatory goals: JA3/JA4 observation of visible QUIC ClientHello data, measured profile-controlled client behavior, and opt-in integration with the Abyss UDP server. It is not a client-only plan.
 
@@ -21,7 +21,7 @@ Use [CODEX-START.md](CODEX-START.md) in the actual ex_quic workspace. The first 
 
 ## Dependency and status
 
-`SSL.QUIC` and `SSL.Fingerprint` are real upstream APIs at the reviewed pin, not work to invent in ex_quic. Use the Git SHA initially; a GitHub release does not establish Hex publication. The actual QUIC/Abyss module names in these documents are target designs.
+`SSL.QUIC` and `SSL.Fingerprint` are real upstream APIs at the reviewed pin, not work to invent in ex_quic. Use the Git SHA initially; a GitHub release does not establish Hex publication. See [implementation progress](docs/requirements-progress.md) and [runtime evidence](docs/m3-runtime.md) for implemented surfaces and remaining gates; design documents also include future modules.
 
 The upstream formatter finding is closed and the inspected supported-runtime compiler/test and TLS-reference jobs pass. Current known upstream limitations, historical macOS TCP integration failures and the absence of a whole-library security audit remain explicit in the review document.
 
@@ -29,4 +29,4 @@ The upstream formatter finding is closed and the inspected supported-runtime com
 
 Copy/adapt these documents into the workspace while preserving local code and user changes. Replace active v1/v2 planning instructions; move older revisions to an explicitly historical archive rather than leaving conflicting prerequisites. Do not create a remote repository or modify ex_ssl/Abyss during the initial scoped task.
 
-The package includes no implementation, credentials, traffic secrets, new network test results or benchmark promises. The full product gate requires observer + measured client profiles + Abyss termination; HTTP/3/QPACK and additional TLS features remain separate work.
+Local tests cover codecs, packet protection, inspection, recovery, and both-role UDP certificate handshakes. These self-connection tests are not independent interoperability or security certification. The full product gate requires observer + measured client profiles + Abyss termination; HTTP/3/QPACK and additional TLS features remain separate work.

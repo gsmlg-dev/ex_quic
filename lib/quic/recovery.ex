@@ -29,7 +29,12 @@ defmodule QUIC.Recovery do
 
   defmodule Space do
     @moduledoc false
-    defstruct next: 0, largest_received: -1, ack_ranges: [], sent: %{}, pending_acks: MapSet.new()
+    defstruct next: 0,
+              largest_received: -1,
+              largest_acked: -1,
+              ack_ranges: [],
+              sent: %{},
+              pending_acks: MapSet.new()
   end
 
   defmodule RTT do
@@ -119,7 +124,7 @@ defmodule QUIC.Recovery do
           do: %{state | congestion: NewReno.on_ack(state.congestion, packet.bytes)},
           else: state
 
-      {:ok, state, [status]}
+      {:ok, arm(state), [status]}
     else
       false -> {:error, :invalid_packet_state}
       error -> error
@@ -148,11 +153,12 @@ defmodule QUIC.Recovery do
          :ok <- known_ack?(state.spaces[space], largest, ranges) do
       {space_state, acked, newly_acked_bytes} = acknowledge(state.spaces[space], ranges, at)
 
+      space_state = %{space_state | largest_acked: max(space_state.largest_acked, largest)}
       state = %{state | spaces: Map.put(state.spaces, space, space_state)}
       {state, sample} = update_rtt(state, space, ack, acked, at)
       state = %{state | congestion: NewReno.on_ack(state.congestion, newly_acked_bytes)}
       {state, threshold_lost} = detect_packet_threshold(state, space, largest)
-      {:ok, state, %{acked: acked, lost: threshold_lost, rtt_sample: sample}}
+      {:ok, arm(state), %{acked: acked, lost: threshold_lost, rtt_sample: sample}}
     end
   end
 
@@ -179,21 +185,53 @@ defmodule QUIC.Recovery do
 
   def note_received(_, _, _), do: {:error, :invalid_received_packet}
 
+  @doc "Recompute the next deadline from actual sent packets, without advancing time."
+  def arm(state) do
+    loss_times =
+      for {_space, s} <- state.spaces,
+          {number, p} <- s.sent,
+          p.status == :sent and is_integer(p.sent_at) and number <= s.largest_acked,
+          do: p.sent_at + loss_delay(state)
+
+    deadline =
+      case loss_times do
+        [] ->
+          case pto_candidates(state) do
+            [] -> nil
+            candidates -> candidates |> Enum.map(&elem(&1, 0)) |> Enum.min()
+          end
+
+        times ->
+          Enum.min(times)
+      end
+
+    %{state | deadline: deadline, timer_generation: state.timer_generation + 1}
+  end
+
   @spec on_time(t(), integer()) :: {:ok, t(), map()}
   def on_time(state, now) when is_integer(now) do
+    expired = is_integer(state.deadline) and now >= state.deadline
     {state, lost} = detect_loss(state, now)
 
-    pto_count =
-      if is_integer(state.deadline) and now >= state.deadline,
-        do: state.rtt.pto_count + 1,
-        else: state.rtt.pto_count
+    probes =
+      if expired and lost == [] do
+        case Enum.sort(pto_candidates(state)) do
+          [{_deadline, space, number} | _] -> [{space, number}]
+          [] -> []
+        end
+      else
+        []
+      end
 
-    state = %{state | rtt: %{state.rtt | pto_count: pto_count}}
-    pto = pto_deadline(state, now)
-    generation = state.timer_generation + 1
+    state =
+      if probes == [],
+        do: state,
+        else: %{state | rtt: %{state.rtt | pto_count: min(16, state.rtt.pto_count + 1)}}
 
-    {:ok, %{state | timer_generation: generation, deadline: pto},
-     %{lost: lost, pto: pto, generation: generation}}
+    next = arm(state)
+
+    {:ok, next,
+     %{lost: lost, probes: probes, pto: next.deadline, generation: next.timer_generation}}
   end
 
   @spec timer_expired?(t(), non_neg_integer(), integer()) :: boolean()
@@ -336,18 +374,19 @@ defmodule QUIC.Recovery do
   end
 
   defp detect_loss(state, now) do
-    threshold = max(1, div((state.rtt.smoothed || @default_rtt) * 9, 8))
+    threshold = loss_delay(state)
 
     Enum.reduce(@spaces, {state, []}, fn space, {st, lost} ->
       s = st.spaces[space]
 
       {s, nums, bytes} =
         Enum.reduce(s.sent, {s, [], 0}, fn {n, p}, {ss, ns, b} ->
-          if (p.status == :sent and p.sent_at) && now - p.sent_at >= threshold,
-            do:
-              {%{ss | sent: Map.put(ss.sent, n, %{p | status: :lost, lost_at: now})}, [n | ns],
-               b + p.bytes},
-            else: {ss, ns, b}
+          if p.status == :sent and is_integer(p.sent_at) and n <= s.largest_acked and
+               now - p.sent_at >= threshold,
+             do:
+               {%{ss | sent: Map.put(ss.sent, n, %{p | status: :lost, lost_at: now})}, [n | ns],
+                b + p.bytes},
+             else: {ss, ns, b}
         end)
 
       {%{
@@ -378,11 +417,37 @@ defmodule QUIC.Recovery do
      }, Enum.map(nums, &{space, &1})}
   end
 
-  defp pto_deadline(state, now) do
-    base =
-      (state.rtt.smoothed || @default_rtt) +
-        4 * (state.rtt.variance || div(@default_rtt, 2)) + state.rtt.max_ack_delay
+  defp loss_delay(state),
+    do:
+      max(
+        1000,
+        div(max(state.rtt.latest || @default_rtt, state.rtt.smoothed || @default_rtt) * 9 + 7, 8)
+      )
 
-    now + base * 2 ** state.rtt.pto_count
+  defp pto_candidates(state) do
+    Enum.flat_map(@spaces, fn space ->
+      sent =
+        state.spaces[space].sent
+        |> Map.values()
+        |> Enum.filter(
+          &(&1.status == :sent and is_integer(&1.sent_at) and
+              Map.get(&1.metadata, :ack_eliciting, true))
+        )
+
+      case sent do
+        [] ->
+          []
+
+        packets ->
+          base =
+            (state.rtt.smoothed || @default_rtt) +
+              max(1000, 4 * (state.rtt.variance || div(@default_rtt, 2))) +
+              if(space == :application, do: state.rtt.max_ack_delay, else: 0)
+
+          latest = packets |> Enum.map(& &1.sent_at) |> Enum.max()
+          oldest = Enum.min_by(packets, & &1.sent_at)
+          [{latest + base * Integer.pow(2, state.rtt.pto_count), space, oldest.number}]
+      end
+    end)
   end
 end
