@@ -146,9 +146,23 @@ defmodule QUIC.HandshakeScheduler do
     else
       false -> {:error, :application_unavailable}
       {:blocked, frame} -> {:blocked, frame}
-      {:error, reason} -> {:error, reason}
     end
   end
+
+  @doc "Open a locally initiated stream without creating a process per stream."
+  @spec open_stream(t(), :bidi | :uni) ::
+          {:ok, t(), non_neg_integer()} | {:blocked, map()} | {:error, term()}
+  def open_stream(%__MODULE__{streams: streams} = state, kind) when kind in [:bidi, :uni] do
+    with true <- Map.has_key?(state.keys, :application),
+         {:ok, next_streams, id} <- Streams.open(streams, kind) do
+      {:ok, %{state | streams: next_streams}, id}
+    else
+      false -> {:error, :application_unavailable}
+      {:blocked, frame} -> {:blocked, frame}
+    end
+  end
+
+  def open_stream(_, _), do: {:error, :invalid_stream_kind}
 
   @doc "Consume queued stream events for a manual-delivery stream policy."
   def consume_stream(%__MODULE__{streams: streams} = state, id, max_bytes) do

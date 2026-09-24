@@ -132,6 +132,15 @@ defmodule QUIC.HandshakeSchedulerLevelsTest do
              next.recovery.spaces.application.sent[0].metadata.control
   end
 
+  test "opens local streams through the scheduler's bounded stream state" do
+    {:ok, state, []} = new()
+
+    assert {:ok, state, 0} = HandshakeScheduler.open_stream(state, :bidi)
+    assert {:ok, state, 4} = HandshakeScheduler.open_stream(state, :uni)
+    assert state.streams.streams[0].local_initiated
+    assert not state.streams.streams[4].bidi
+  end
+
   test "independently decrypted outbound Handshake replays and retransmits without another TLS feed" do
     {:ok, sender, [first]} =
       HandshakeScheduler.new(:client,

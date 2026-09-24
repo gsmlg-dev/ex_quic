@@ -27,6 +27,10 @@ defmodule QUIC.Connection do
   def status(pid), do: :gen_statem.call(pid, :status)
   def close(pid), do: :gen_statem.call(pid, :close)
 
+  @doc "Open a locally initiated bidirectional or unidirectional stream."
+  def open_stream(pid, kind, timeout \\ 5_000),
+    do: :gen_statem.call(pid, {:stream_open, kind}, timeout)
+
   @doc "Admit bounded application bytes to a connection-owned stream."
   def send_stream(pid, stream_id, data, fin \\ false, timeout \\ 5_000) do
     try do
@@ -179,6 +183,23 @@ defmodule QUIC.Connection do
         reply(from, {:error, reason})
     end
   end
+
+  def handle_event({:call, from}, {:stream_open, kind}, :established, data)
+      when kind in [:bidi, :uni] do
+    case HandshakeScheduler.open_stream(data.scheduler, kind) do
+      {:ok, scheduler, stream_id} ->
+        {:keep_state, %{data | scheduler: scheduler}, [{:reply, from, {:ok, stream_id}}]}
+
+      {:blocked, frame} ->
+        reply(from, {:blocked, frame})
+
+      {:error, reason} ->
+        reply(from, {:error, reason})
+    end
+  end
+
+  def handle_event({:call, from}, {:stream_open, _kind}, _phase, _data),
+    do: reply(from, {:error, :not_established})
 
   def handle_event({:call, from}, {:stream_send, _stream_id, _bytes, _fin}, _phase, _data),
     do: reply(from, {:error, :not_established})
