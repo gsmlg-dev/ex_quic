@@ -16,7 +16,7 @@ client Retry scenario also passes as recorded below.
 | ex_quic client → aioquic Retry server | passed; integrity tag, token echo, preserved ClientHello, increasing packet numbers and authenticated Retry CID |
 | aioquic client → ex_quic Retry server | passed; authenticated expiring address-bound token, both handshakes and QUIC confirmation |
 | Independent Initial/Handshake loss, reorder, duplicates, corruption | passed in both roles for the deterministic single-fault cases below |
-| Independent wrong certificate / ALPN cases | not run; existing local negative tests are separate evidence |
+| Independent wrong CA, hostname and ALPN | passed in both roles; exact failures recorded below |
 | Independent ChaCha negotiation | not run; packet AEAD and RFC 8439 block/header-mask unit tests pass |
 
 ## Reproduction
@@ -184,3 +184,47 @@ Independent certificate/ALPN negatives remain pending.
 Impairment increment local gates: formatting, warnings-as-errors compilation,
 104 ExUnit tests (seed 589848), and diff checks passed. All ten final network
 cells and all three harness qualification tests exited 0.
+
+## Independent authentication negatives
+
+All six combinations of `client|server` and
+`wrong_ca|wrong_hostname|wrong_alpn` exited 0 on 2026-09-24. These are **expected
+rejections**, not successful handshakes. Verification remains enabled. Source
+parent: `cd408b51fb76d9848f596ffc74aecd8db4fb51a8`, with the negative harness applied.
+The runtime/peer versions match the matrix above. Reproduce with:
+
+```sh
+INTEROP_SCENARIO=<scenario> mix run scripts/interop/run.exs <role> _build/interop/<role>-<scenario>
+```
+
+The CA case trusts only the unrelated public `pkix/wrong_root.pem` fixture from
+the pinned dependency; hostname uses `wrong.example.test`; ALPN uses `incompatible`.
+
+| ex_quic role | Case | Required observed error |
+| --- | --- | --- |
+| client | wrong CA | local TLS `unknown_ca`, `path_validation_failed` |
+| client | wrong hostname | local TLS `certificate_unknown`, `hostname_mismatch` |
+| client | wrong ALPN | aioquic termination 296 (TLS handshake_failure), `No common ALPN protocols` |
+| server | wrong CA | aioquic termination 298 (TLS bad_certificate), `unable to get local issuer certificate` |
+| server | wrong hostname | aioquic termination 298, hostname `doesn't match` |
+| server | wrong ALPN | local TLS `no_application_protocol` |
+
+The runner requires the matching structured local TLS error or independent
+termination event, no independent HandshakeCompleted and no local established
+connection. A timeout, generic close, missing process or arbitrary failure is not
+an accepted negative result. Server cases do not claim client-certificate auth.
+
+Initial runs exposed harness observation defects: it stopped at the local generic
+peer-close notification before aioquic emitted its structured termination event,
+and a route could disappear between enumeration and status lookup. The runner
+now waits for the expected TLS evidence and tolerates only normal/noproc status
+races. The initial ALPN expectation was corrected from TLS alert 120 to aioquic
+1.2.0's actual alert 40; the specific `No common ALPN protocols` reason is required.
+Four initial cells exited 1; their corrected `*-final` commands exited 0. Client
+wrong-CA and wrong-hostname cells passed on their first execution. Archived final
+results/captures use `<role>-<scenario>-*` and SHA256SUMS.
+
+Negative increment local gates: formatting, warnings-as-errors compilation,
+104 ExUnit tests (seed 860694), and diff checks passed. An ordinary client
+handshake was rerun after the runner changes and passed. All six final negative
+cells exited 0; the earlier harness failures are described above.

@@ -5,7 +5,11 @@ defmodule QUIC.Interop.Run do
   def run(mode, directory) do
     scenario = System.get_env("INTEROP_SCENARIO", "baseline")
     impairments = ["drop_initial", "drop_handshake", "reorder", "duplicate", "corrupt"]
-    unless scenario in (["baseline", "retry"] ++ impairments), do: raise("unsupported scenario")
+    negatives = ["wrong_ca", "wrong_hostname", "wrong_alpn"]
+
+    unless scenario in (["baseline", "retry"] ++ impairments ++ negatives),
+      do: raise("unsupported scenario")
+
     File.mkdir_p!(directory)
     fixture = Path.expand("deps/ex_ssl/test/fixtures/server_flight")
 
@@ -24,6 +28,21 @@ defmodule QUIC.Interop.Run do
       reference_identity: {:dns_id, "example.test"},
       alpn: ["ex-quic-test"]
     ]
+
+    client_tls =
+      case scenario do
+        "wrong_ca" ->
+          Keyword.put(client_tls, :cacerts, [der.("../pkix/wrong_root.pem")])
+
+        "wrong_hostname" ->
+          Keyword.put(client_tls, :reference_identity, {:dns_id, "wrong.example.test"})
+
+        "wrong_alpn" ->
+          Keyword.put(client_tls, :alpn, ["incompatible"])
+
+        _ ->
+          client_tls
+      end
 
     server_tls = [cert: [der.("leaf.pem")], key: {type, key}, alpn: ["ex-quic-test"]]
 
@@ -55,7 +74,13 @@ defmodule QUIC.Interop.Run do
       "--key",
       Path.join(fixture, "leaf-key.pem"),
       "--ca",
-      Path.join(fixture, "root.pem"),
+      Path.join(
+        fixture,
+        if(mode == "server" and scenario == "wrong_ca",
+          do: "../pkix/wrong_root.pem",
+          else: "root.pem"
+        )
+      ),
       "--capture",
       Path.join(directory, "udp.jsonl")
     ]
@@ -63,6 +88,16 @@ defmodule QUIC.Interop.Run do
     args = if scenario == "retry" and mode == "client", do: args ++ ["--retry"], else: args
 
     args = if scenario in impairments, do: args ++ ["--scenario", scenario], else: args
+
+    args =
+      if mode == "server" and scenario == "wrong_hostname",
+        do: args ++ ["--hostname", "wrong.example.test"],
+        else: args
+
+    args =
+      if mode == "server" and scenario == "wrong_alpn",
+        do: args ++ ["--alpn", "incompatible"],
+        else: args
 
     peer =
       Port.open(
@@ -75,7 +110,7 @@ defmodule QUIC.Interop.Run do
     {endpoint, messages} =
       if endpoint, do: {endpoint, []}, else: start_client(peer, client_tls, deadline, [])
 
-    result = await(peer, endpoint, mode, deadline, messages, false)
+    result = await(peer, endpoint, mode, deadline, messages, false, scenario in negatives)
     observed_retry = Enum.any?(result.events, &match?(%{"event" => "retry"}, &1))
 
     observed_impairment =
@@ -85,8 +120,12 @@ defmodule QUIC.Interop.Run do
       Map.merge(result, %{
         scenario: scenario,
         passed:
-          result.passed and (scenario != "retry" or observed_retry) and
-            (scenario not in impairments or observed_impairment)
+          if(scenario in negatives,
+            do: negative_passed?(result, mode, scenario),
+            else:
+              result.passed and (scenario != "retry" or observed_retry) and
+                (scenario not in impairments or observed_impairment)
+          )
       })
 
     File.write!(Path.join(directory, "result.json"), JSON.encode!(result))
@@ -122,7 +161,7 @@ defmodule QUIC.Interop.Run do
     end
   end
 
-  defp await(peer, endpoint, mode, deadline, messages, peer_complete) do
+  defp await(peer, endpoint, mode, deadline, messages, peer_complete, negative) do
     error = Endpoint.stats(endpoint).last_error
     local_error = %{"local_error" => inspect(error)}
 
@@ -131,12 +170,22 @@ defmodule QUIC.Interop.Run do
         do: messages ++ [local_error],
         else: messages
 
-    states = Enum.map(Endpoint.connections(endpoint), &Connection.status(&1.pid))
+    states = Enum.flat_map(Endpoint.connections(endpoint), &connection_status/1)
     local_complete = Enum.any?(states, &(&1.phase == :established and &1.quic_confirmed))
 
-    if (local_complete and peer_complete) or System.monotonic_time(:millisecond) >= deadline do
+    peer_failed = Enum.any?(messages, &match?(%{"event" => "terminated"}, &1))
+
+    if (local_complete and peer_complete) or
+         (negative and (match?({:tls, _, _, _}, error) or peer_failed)) or
+         System.monotonic_time(:millisecond) >= deadline do
       %{
         passed: local_complete and peer_complete,
+        peer_complete: peer_complete,
+        failure:
+          case error do
+            {:tls, kind, alert, reason} -> %{kind: kind, alert: alert, reason: inspect(reason)}
+            _ -> nil
+          end,
         role: mode,
         peer: "aioquic 1.2.0",
         runtime: %{elixir: System.version(), otp: to_string(:erlang.system_info(:otp_release))},
@@ -154,14 +203,73 @@ defmodule QUIC.Interop.Run do
             end
 
           complete = peer_complete or match?(%{"event" => "handshake_complete"}, message)
-          await(peer, endpoint, mode, deadline, messages ++ [message], complete)
+          await(peer, endpoint, mode, deadline, messages ++ [message], complete, negative)
 
         {^peer, {:exit_status, code}} ->
-          await(peer, endpoint, mode, 0, messages ++ [%{exit_status: code}], peer_complete)
+          await(
+            peer,
+            endpoint,
+            mode,
+            0,
+            messages ++ [%{exit_status: code}],
+            peer_complete,
+            negative
+          )
       after
-        20 -> await(peer, endpoint, mode, deadline, messages, peer_complete)
+        20 -> await(peer, endpoint, mode, deadline, messages, peer_complete, negative)
       end
     end
+  end
+
+  # The connection can finish between listing routes and querying its status.
+  # Only a disappeared process is skipped; unexpected status failures remain fatal.
+  defp connection_status(entry) do
+    [Connection.status(entry.pid)]
+  catch
+    :exit, {:noproc, _} -> []
+    :exit, {:normal, _} -> []
+  end
+
+  defp negative_passed?(result, mode, scenario) do
+    no_ready =
+      not result.peer_complete and Enum.all?(result.connections, &(&1.phase != :established))
+
+    expected =
+      case {mode, scenario} do
+        {"client", "wrong_ca"} ->
+          match?(%{kind: :tls, alert: :unknown_ca}, result.failure)
+
+        {"client", "wrong_hostname"} ->
+          match?(
+            %{kind: :tls, alert: :certificate_unknown, reason: ":hostname_mismatch"},
+            result.failure
+          )
+
+        {"server", "wrong_alpn"} ->
+          match?(%{kind: :tls, alert: :no_application_protocol}, result.failure)
+
+        {"client", "wrong_alpn"} ->
+          peer_alert?(result.events, 0x128, "No common ALPN protocols")
+
+        {"server", "wrong_hostname"} ->
+          peer_alert?(result.events, 0x12A, "doesn't match")
+
+        {"server", "wrong_ca"} ->
+          peer_alert?(result.events, 0x12A, "issuer") or
+            peer_alert?(result.events, 0x12A, "self-signed")
+      end
+
+    no_ready and expected
+  end
+
+  defp peer_alert?(events, code, reason) do
+    Enum.any?(events, fn
+      %{"event" => "terminated", "error_code" => ^code, "reason" => text} ->
+        String.contains?(text, reason)
+
+      _ ->
+        false
+    end)
   end
 
   defp sanitize(map),
