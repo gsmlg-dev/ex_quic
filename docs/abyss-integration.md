@@ -1,6 +1,6 @@
 # Abyss integration — opt-in QUIC endpoint
 
-Target inspected: `gsmlg-dev/abyss@d4ed1467295edca50266901fc2890cb00e973048`. This is a proposed additive integration; no Abyss source was changed in this review. [R5]
+Target inspected: `gsmlg-dev/abyss@0de0b8a` (pushed to `gsmlg-dev/abyss/main`). The additive dispatcher seam is implemented there; the ex_quic adapter and independent QUIC-through-Abyss acceptance remain pending. [R5]
 
 ## Actual starting behavior
 
@@ -8,9 +8,11 @@ Target inspected: `gsmlg-dev/abyss@d4ed1467295edca50266901fc2890cb00e973048`. Th
 
 Do not route every QUIC datagram through that handler lifecycle. QUIC requires durable per-connection state and several CIDs can identify the same state. Do not rely on changing the UDP handler module alone.
 
-## Proposed seam
+## Dispatcher seam (implemented in Abyss)
 
-Add a general `datagram_dispatcher` configuration option (name to verify against actual APIs). Omitted means the exact existing UDP path. QUIC mode invokes a lightweight adapter before handler creation, passing datagram bytes, remote address, local endpoint metadata, monotonic receipt time and endpoint generation.
+The Abyss patch adds a general `datagram_dispatcher` configuration option. Omitted means the exact existing UDP path. Opt-in mode invokes a persistent callback before handler creation, passing datagram bytes, remote address, local endpoint metadata, monotonic receipt time and endpoint generation.
+
+The listener still blocks in `recv(:infinity)`. A separate bounded writer owns egress admission and reports local send results while the listener remains blocked. Routes are monitored and removed when their connection process exits. See `gsmlg-dev/abyss@0de0b8a` and `docs/dispatcher.md` in that repository.
 
 The adapter performs bounded admission and hands data to `QUIC.Endpoint`. New connections are admitted only after minimal structural/version checks and a resource reservation. Established routes use destination CID; a provisional map covers Initial packets before the selected server CID becomes usable. Untrusted CID fields are routing hints, not authentication.
 
