@@ -48,7 +48,7 @@ Default to a dedicated QUIC port/endpoint. Do not invent mixed-protocol demultip
 
 ## Required tests and separate task scope
 
-The M5 acceptance run now uses two ex_quic clients against the Abyss-owned listener with certificate verification, transfers two streams, closes one connection, suspends/resumes the listener, and admits a third client after restart. The independent aioquic handshake matrix and profile captures remain separate evidence; this script does not claim an independently implemented peer stream transfer.
+The M5 acceptance run uses two ex_quic clients against the Abyss-owned listener with certificate verification, transfers two streams, closes one connection, suspends/resumes the listener, and admits a third client after restart. An independent aioquic client also sends two FIN-terminated streams to an ex_quic server in `scripts/interop/stream_interop.exs`; the two runs provide separate shared-socket and peer-stream evidence.
 
 The existing Abyss test suite passes in default mode with the dispatcher option omitted (`501 passed`, `12 excluded`). A dedicated dependency-disabled regression remains pending; ordinary UDP behavior is covered by the existing default suite but has not been isolated as a separate acceptance command.
 

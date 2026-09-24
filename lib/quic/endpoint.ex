@@ -263,7 +263,8 @@ defmodule QUIC.Endpoint do
              data.role,
              original_dcid,
              scid,
-             retry_scid
+             retry_scid,
+             Keyword.get(data.opts, :streams, [])
            ),
          opts <- [
            role: data.role,
@@ -320,13 +321,13 @@ defmodule QUIC.Endpoint do
     :exit, _ -> {:error, :connection_start_failed}
   end
 
-  defp materialize(tls, role, original, scid, retry_scid) do
+  defp materialize(tls, role, original, scid, retry_scid, stream_opts) do
     entries = [%{id: 0x0F, value: scid}]
     entries = if role == :server, do: [%{id: 0, value: original} | entries], else: entries
-
     entries = if retry_scid, do: [%{id: 0x10, value: retry_scid} | entries], else: entries
 
-    with {:ok, generated} <- TransportParameters.encode(entries, role: role),
+    with {:ok, stream_entries} <- stream_transport_entries(stream_opts),
+         {:ok, generated} <- TransportParameters.encode(entries ++ stream_entries, role: role),
          tls <- apply_profile(tls, generated),
          raw <- Keyword.get(tls, :transport_parameters, generated),
          {:ok, decoded} <- TransportParameters.decode(raw),
@@ -339,6 +340,24 @@ defmodule QUIC.Endpoint do
            ) do
       {:ok, Keyword.put(tls, :transport_parameters, raw)}
     end
+  end
+
+  defp stream_transport_entries(opts) do
+    values = [
+      {0x04, Keyword.get(opts, :max_data, 1_048_576)},
+      {0x05, Keyword.get(opts, :max_stream_data, 65_536)},
+      {0x06, Keyword.get(opts, :max_stream_data, 65_536)},
+      {0x07, Keyword.get(opts, :max_stream_data, 65_536)},
+      {0x08, Keyword.get(opts, :max_streams_bidi, 16)},
+      {0x09, Keyword.get(opts, :max_streams_uni, 16)}
+    ]
+
+    Enum.reduce_while(values, {:ok, []}, fn {id, value}, {:ok, acc} ->
+      case QUIC.Codec.encode_varint(value) do
+        {:ok, encoded} -> {:cont, {:ok, acc ++ [%{id: id, value: encoded}]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
   end
 
   defp apply_profile(tls, generated) do

@@ -35,6 +35,12 @@ The captured Initial ClientHello observations were:
 | ordered | `1b123fa8bb66f306d88417cb151ed447` | `q13i0207ec_62ed6f6ca7ad_7ce92f1763d4` | aioquic handshake and QUIC confirmation passed |
 | compact | `c6d419ac70651660d495a2e2b83241c2` | `q13i0207ec_62ed6f6ca7ad_7ce92f1763d4` | aioquic handshake and QUIC confirmation passed |
 
+Independent stream transfer also passes with `mix run scripts/interop/stream_interop.exs`:
+the aioquic peer sends two FIN-terminated bidirectional streams, and the ex_quic
+server observes both complete payloads and FIN events. Endpoint transport
+parameters advertise bounded initial data and stream credits from the configured
+stream limits.
+
 JA4 remains equal because its normalized fields do not encode the reordered
 cipher/group policy; the JA3 and raw ClientHello observations distinguish the
 profiles. The captures are transport-boundary JSONL records, not kernel PCAPs.
