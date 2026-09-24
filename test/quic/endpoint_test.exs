@@ -163,6 +163,44 @@ defmodule QUIC.EndpointTest do
     assert eventually(fn -> Endpoint.connections(server) == [] end)
   end
 
+  test "replayed Initial for a retired CID cannot recreate a connection" do
+    {:ok, server} =
+      Endpoint.start_link(
+        role: :server,
+        closing_timeout: 40,
+        draining_timeout: 40,
+        tls: [adapter: RecordedTLS]
+      )
+
+    {:ok, sender} = :gen_udp.open(0, [:binary, {:ip, {127, 0, 0, 1}}])
+
+    on_exit(fn ->
+      :gen_udp.close(sender)
+      stop(server)
+    end)
+
+    {ip, port} = Endpoint.local(server)
+    dcid = <<21, 22, 23, 24, 25, 26, 27, 28>>
+
+    {:ok, _scheduler, [initial]} =
+      QUIC.HandshakeScheduler.new(:client,
+        dcid: dcid,
+        scid: <<31, 32, 33, 34, 35, 36, 37, 38>>,
+        adapter: RecordedTLS
+      )
+
+    :ok = :gen_udp.send(sender, ip, port, initial.bytes)
+    assert eventually(fn -> length(Endpoint.connections(server)) == 1 end)
+    [%{pid: pid}] = Endpoint.connections(server)
+    :ok = Connection.close(pid)
+    assert eventually(fn -> Endpoint.connections(server) == [] end)
+
+    :ok = :gen_udp.send(sender, ip, port, initial.bytes)
+    Process.sleep(50)
+    assert Endpoint.connections(server) == []
+    assert Endpoint.stats(server).routes == 0
+  end
+
   test "real certificate handshake crosses UDP in both roles" do
     {server_tls, client_tls} = certificate_options()
     {:ok, server} = Endpoint.start_link(role: :server, handshake_timeout: 2_000, tls: server_tls)

@@ -56,6 +56,8 @@ defmodule QUIC.Endpoint do
           max: max,
           routes: %{},
           provisional: %{},
+          retired: %{},
+          retired_limit: max * 4,
           connections: %{},
           admission_drops: 0,
           last_error: nil
@@ -171,12 +173,16 @@ defmodule QUIC.Endpoint do
 
   defp route(data, remote, bytes, at) do
     with {:ok, dcid} <- destination(bytes) do
-      pid = Map.get(data.routes, dcid) || Map.get(data.provisional, {remote, dcid})
+      if retired?(data, remote, dcid) do
+        data
+      else
+        pid = Map.get(data.routes, dcid) || Map.get(data.provisional, {remote, dcid})
 
-      case data.connections[pid] do
-        %{remote: ^remote} = entry -> deliver(data, entry, bytes, at)
-        nil -> maybe_admit(data, remote, bytes, at)
-        _ -> data
+        case data.connections[pid] do
+          %{remote: ^remote} = entry -> deliver(data, entry, bytes, at)
+          nil -> maybe_admit(data, remote, bytes, at)
+          _ -> data
+        end
       end
     else
       _ -> data
@@ -403,12 +409,41 @@ defmodule QUIC.Endpoint do
       _ -> :ok
     end
 
+    retired =
+      data.routes
+      |> Enum.filter(fn {_, target} -> target == pid end)
+      |> Enum.map(fn {cid, _} -> {:cid, cid} end)
+      |> Kernel.++(
+        data.provisional
+        |> Enum.filter(fn {_, target} -> target == pid end)
+        |> Enum.map(fn {{remote, cid}, _} -> {:remote, remote, cid} end)
+      )
+
     %{
       data
       | connections: Map.delete(data.connections, pid),
         routes: Map.reject(data.routes, fn {_, target} -> target == pid end),
-        provisional: Map.reject(data.provisional, fn {_, target} -> target == pid end)
+        provisional: Map.reject(data.provisional, fn {_, target} -> target == pid end),
+        retired: add_retired(data.retired, retired, data.retired_limit)
     }
+  end
+
+  defp retired?(data, remote, cid),
+    do:
+      Map.has_key?(data.retired, {:cid, cid}) or
+        Map.has_key?(data.retired, {:remote, remote, cid})
+
+  defp add_retired(retired, keys, limit) do
+    retired = Enum.reduce(keys, retired, &Map.put(&2, &1, true))
+
+    if map_size(retired) <= limit do
+      retired
+    else
+      retired
+      |> Map.keys()
+      |> Enum.take(map_size(retired) - limit)
+      |> Enum.reduce(retired, &Map.delete(&2, &1))
+    end
   end
 
   defp destination(<<first, _version::32, length, rest::binary>>)
