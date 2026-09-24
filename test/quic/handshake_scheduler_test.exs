@@ -190,6 +190,29 @@ defmodule QUIC.HandshakeSchedulerTest do
     assert state.recovery.spaces.initial.sent[0].status == :failed
   end
 
+  test "CRYPTO retransmission reserves a fresh packet number without another TLS call" do
+    {:ok, state, [first]} = new()
+
+    {:ok, state, [:failed]} =
+      HandshakeScheduler.local_send(state, :initial, 0, {:error, :closed}, 10)
+
+    tls_before = state.tls
+
+    assert {:ok, next, [retry]} =
+             HandshakeScheduler.retry_crypto(state, :initial, first.packet_number)
+
+    assert retry.packet_number == 1
+    refute retry.bytes == first.bytes
+    assert next.tls == tls_before
+
+    assert next.recovery.spaces.initial.sent[1].metadata.crypto ==
+             state.recovery.spaces.initial.sent[0].metadata.crypto
+
+    assert next.recovery.spaces.initial.sent[0].status == :failed
+    assert {:ok, _, [:sent]} = HandshakeScheduler.local_send(next, :initial, 1, :ok, -100)
+    assert {:error, :unknown_packet} = HandshakeScheduler.retry_crypto(next, :handshake, 0)
+  end
+
   test "ACK is queued into the next packet and peer accounting remains explicit" do
     assert {:ok, state, [effect]} = new()
 

@@ -10,6 +10,49 @@ defmodule QUIC.RecoveryTest do
     {state, packet.number}
   end
 
+  test "peer ACK never changes inbound packet number reconstruction or ACK ranges" do
+    state = Recovery.new()
+    {:ok, state} = Recovery.note_received(state, :initial, 7)
+    {state, number} = sent(state, :initial, 10, 0)
+
+    {:ok, state, %{acked: [^number]}} =
+      Recovery.receive_ack(state, :initial, %{largest: number, ranges: [{number, number}]}, 10)
+
+    assert state.spaces.initial.largest_received == 7
+    assert state.spaces.initial.ack_ranges == [{7, 7}]
+
+    {state, number} = sent(state, :handshake, 10, 0)
+
+    {:ok, state, _} =
+      Recovery.receive_ack(state, :handshake, %{largest: number, ranges: [{number, number}]}, 10)
+
+    assert state.spaces.handshake.largest_received == -1
+    assert state.spaces.handshake.ack_ranges == []
+  end
+
+  test "out of order receive numbers merge ranges and obey a bounded range count" do
+    state = Recovery.new(max_ack_ranges: 2)
+    {:ok, state} = Recovery.note_received(state, :initial, 4)
+    {:ok, state} = Recovery.note_received(state, :initial, 2)
+    assert state.spaces.initial.ack_ranges == [{2, 2}, {4, 4}]
+    assert {:error, :ack_range_limit} = Recovery.note_received(state, :initial, 0)
+    {:ok, state} = Recovery.note_received(state, :initial, 3)
+    assert state.spaces.initial.ack_ranges == [{2, 4}]
+    {:ok, state} = Recovery.note_received(state, :initial, 2)
+    assert state.spaces.initial.ack_ranges == [{2, 4}]
+    assert state.spaces.initial.largest_received == 4
+    {:ok, state} = Recovery.note_received(state, :initial, 0)
+    assert state.spaces.initial.ack_ranges == [{0, 0}, {2, 4}]
+  end
+
+  test "rejects an ACK whose largest field is below another acknowledged number" do
+    {state, _} = sent(Recovery.new(), :initial, 10, 0)
+    {state, _} = sent(state, :initial, 10, 1)
+
+    assert {:error, :invalid_ack_ranges} =
+             Recovery.receive_ack(state, :initial, %{largest: 0, ranges: [{0, 1}]}, 10)
+  end
+
   test "packet number spaces are independent and numbers are never reused" do
     state = Recovery.new()
     {:ok, state, initial} = Recovery.reserve(state, :initial, %{}, 10)

@@ -98,9 +98,9 @@ defmodule QUIC.Recovery do
 
   def transition(_, _, _, _), do: {:error, :invalid_status}
 
-  @spec local_send(t(), atom(), non_neg_integer(), :ok | {:error, term()}, non_neg_integer()) ::
+  @spec local_send(t(), atom(), non_neg_integer(), :ok | {:error, term()}, integer()) ::
           {:ok, t(), [atom()]} | {:error, atom()}
-  def local_send(state, space, number, :ok, at) when is_integer(at) and at >= 0 do
+  def local_send(state, space, number, :ok, at) when is_integer(at) do
     with {:ok, packet} <- fetch_packet(state, space, number),
          true <- packet.status in [:reserved, :queued] do
       packet = %{packet | status: :sent, sent_at: at}
@@ -139,7 +139,7 @@ defmodule QUIC.Recovery do
     end
   end
 
-  @spec receive_ack(t(), atom(), map(), non_neg_integer()) :: {:ok, t(), map()} | {:error, atom()}
+  @spec receive_ack(t(), atom(), map(), integer()) :: {:ok, t(), map()} | {:error, atom()}
   def receive_ack(state, space, ack, at)
       when space in @spaces and is_map(ack) and is_integer(at) do
     with {:ok, ranges} <-
@@ -147,12 +147,6 @@ defmodule QUIC.Recovery do
          {:ok, largest} <- validate_largest(ack[:largest], ranges),
          :ok <- known_ack?(state.spaces[space], largest, ranges) do
       {space_state, acked, newly_acked_bytes} = acknowledge(state.spaces[space], ranges, at)
-
-      space_state = %{
-        space_state
-        | largest_received: max(space_state.largest_received, largest),
-          ack_ranges: merge_ranges(space_state.ack_ranges, ranges)
-      }
 
       state = %{state | spaces: Map.put(state.spaces, space, space_state)}
       {state, sample} = update_rtt(state, space, ack, acked, at)
@@ -168,28 +162,25 @@ defmodule QUIC.Recovery do
       when space in @spaces and is_integer(number) and number >= 0 do
     current = state.spaces[space]
 
-    if number > current.largest_received do
-      ranges = merge_ranges(current.ack_ranges, [{number, number}])
+    ranges = merge_ranges(current.ack_ranges, [{number, number}])
 
-      {:ok,
-       %{
-         state
-         | spaces:
-             Map.put(state.spaces, space, %{
-               current
-               | largest_received: number,
-                 ack_ranges: ranges
-             })
-       }}
+    if length(ranges) <= state.max_ack_ranges do
+      next = %{
+        current
+        | largest_received: max(number, current.largest_received),
+          ack_ranges: ranges
+      }
+
+      {:ok, %{state | spaces: Map.put(state.spaces, space, next)}}
     else
-      {:ok, state}
+      {:error, :ack_range_limit}
     end
   end
 
   def note_received(_, _, _), do: {:error, :invalid_received_packet}
 
-  @spec on_time(t(), non_neg_integer()) :: {:ok, t(), map()}
-  def on_time(state, now) when is_integer(now) and now >= 0 do
+  @spec on_time(t(), integer()) :: {:ok, t(), map()}
+  def on_time(state, now) when is_integer(now) do
     {state, lost} = detect_loss(state, now)
 
     pto_count =
@@ -205,7 +196,7 @@ defmodule QUIC.Recovery do
      %{lost: lost, pto: pto, generation: generation}}
   end
 
-  @spec timer_expired?(t(), non_neg_integer(), non_neg_integer()) :: boolean()
+  @spec timer_expired?(t(), non_neg_integer(), integer()) :: boolean()
   def timer_expired?(%__MODULE__{deadline: deadline, timer_generation: generation}, token, now),
     do: token == generation and is_integer(deadline) and now >= deadline
 
@@ -240,7 +231,7 @@ defmodule QUIC.Recovery do
   defp validate_largest(nil, _), do: {:error, :invalid_ack}
 
   defp validate_largest(largest, ranges) when is_integer(largest) and largest >= 0 do
-    if Enum.any?(ranges, fn {lo, hi} -> lo <= largest and hi >= largest end),
+    if ranges != [] and Enum.max(Enum.map(ranges, &elem(&1, 1))) == largest,
       do: {:ok, largest},
       else: {:error, :invalid_ack_ranges}
   end
@@ -299,7 +290,18 @@ defmodule QUIC.Recovery do
     end)
   end
 
-  defp merge_ranges(existing, incoming), do: Enum.uniq(Enum.sort(existing ++ incoming))
+  defp merge_ranges(existing, incoming) do
+    (existing ++ incoming)
+    |> Enum.sort()
+    |> Enum.reduce([], fn
+      {lo, hi}, [{previous_lo, previous_hi} | rest] when lo <= previous_hi + 1 ->
+        [{previous_lo, max(previous_hi, hi)} | rest]
+
+      range, acc ->
+        [range | acc]
+    end)
+    |> Enum.reverse()
+  end
 
   defp update_rtt(state, space, ack, acked, at) do
     sample =

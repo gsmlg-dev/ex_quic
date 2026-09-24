@@ -123,12 +123,12 @@ defmodule QUIC.HandshakeScheduler do
   end
 
   @doc "Receive one authenticated protected QUIC packet without socket/runtime effects."
-  @spec receive_datagram(t(), binary(), non_neg_integer()) ::
+  @spec receive_datagram(t(), binary(), integer()) ::
           {:ok, t(), [map()]} | {:error, term(), t()}
   def receive_datagram(state, datagram, at \\ 0)
 
   def receive_datagram(%__MODULE__{} = state, datagram, at)
-      when is_binary(datagram) and is_integer(at) and at >= 0 do
+      when is_binary(datagram) and is_integer(at) do
     original = state
 
     with {:ok, packet} <- decode_protected_packet(state, datagram),
@@ -159,6 +159,26 @@ defmodule QUIC.HandshakeScheduler do
 
       _ ->
         {:error, :unknown_packet}
+    end
+  end
+
+  @doc "Repacketize retained CRYPTO under a fresh packet number without calling TLS."
+  def retry_crypto(%__MODULE__{} = state, space, number) when space in @spaces do
+    case state.recovery.spaces[space].sent[number] do
+      %Recovery.Packet{status: status, metadata: %{level: level, crypto: {offset, length}}}
+      when status in [:sent, :lost, :failed] and length > 0 ->
+        with {:ok, bytes} <- TLSDriver.retransmit(state.tls, level, offset, length) do
+          schedule(%{
+            state
+            | pending: state.pending ++ [%{level: level, offset: offset, bytes: bytes}]
+          })
+        end
+
+      nil ->
+        {:error, :unknown_packet}
+
+      _ ->
+        {:error, :not_retransmittable}
     end
   end
 
