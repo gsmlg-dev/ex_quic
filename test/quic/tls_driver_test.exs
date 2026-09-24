@@ -31,6 +31,11 @@ defmodule QUIC.TLSDriverTest do
       {:error, error, %{state | phase: :failed}, [{:error, error}]}
     end
 
+    def feed(%__MODULE__{phase: :handshake} = state, :handshake, <<254>>) do
+      error = %{kind: :tls, alert: :decrypt_error, reason: :corrupted_finished}
+      {:error, error, %{state | phase: :failed}, []}
+    end
+
     def feed(_state, _level, _bytes),
       do:
         {:error, %{kind: :quic, reason: :unexpected_recorded_input}, %__MODULE__{phase: :failed},
@@ -94,6 +99,19 @@ defmodule QUIC.TLSDriverTest do
              QUIC.TLSDriver.feed(failed, :initial, 0, <<>>)
 
     assert ^failed = QUIC.TLSDriver.abort(failed, :again)
+  end
+
+  test "a corrupted Finished is terminal and emits no replacement flight" do
+    assert {:ok, state, _} = QUIC.TLSDriver.new(:client, adapter: RecordedTLS)
+    assert {:ok, state, _} = QUIC.TLSDriver.feed(state, :initial, 0, <<1, 2>>)
+
+    assert {:error, %{reason: :corrupted_finished}, failed, []} =
+             QUIC.TLSDriver.feed(state, :handshake, 0, <<254>>)
+
+    assert failed.terminal == :failed
+
+    assert {:error, %{kind: :closed, reason: :terminal}, ^failed, []} =
+             QUIC.TLSDriver.feed(failed, :handshake, 1, <<>>)
   end
 
   test "retained TLS output has an explicit aggregate budget" do
