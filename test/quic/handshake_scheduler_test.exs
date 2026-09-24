@@ -84,6 +84,20 @@ defmodule QUIC.HandshakeSchedulerTest do
     def feed(state, _level, _bytes), do: {:ok, state, []}
   end
 
+  defmodule InboundRecorded do
+    defstruct [:received]
+
+    def new(_, _), do: {:ok, %__MODULE__{received: []}, []}
+    def info(_), do: %{receive_level: :initial}
+    def abort(state, _), do: state
+
+    def feed(state, :initial, bytes),
+      do: {:ok, %{state | received: state.received ++ [bytes]}, []}
+
+    def feed(state, _level, _bytes),
+      do: {:error, %{kind: :quic, reason: :unexpected_level}, state, []}
+  end
+
   defp new(opts \\ []) do
     HandshakeScheduler.new(
       :client,
@@ -207,5 +221,92 @@ defmodule QUIC.HandshakeSchedulerTest do
     assert {:error, {:unsupported_level, :handshake}, ^state} = HandshakeScheduler.schedule(state)
 
     assert {:error, :send_queue_limit, _limited} = new(max_queue: 0)
+  end
+
+  test "authenticated Initial datagram dispatches CRYPTO exactly once" do
+    {:ok, sender, [effect]} =
+      HandshakeScheduler.new(
+        :client,
+        dcid: <<1, 2, 3, 4>>,
+        scid: <<5, 6, 7, 8>>,
+        adapter: Recorded,
+        min_initial_size: 0
+      )
+
+    {:ok, initial_read} = Protection.initial_secrets(<<1, 2, 3, 4>>, :client)
+
+    {:ok, receiver, []} =
+      HandshakeScheduler.new(
+        :client,
+        dcid: <<1, 2, 3, 4>>,
+        scid: <<5, 6, 7, 8>>,
+        adapter: InboundRecorded,
+        initial_read_keys: initial_read,
+        min_initial_size: 0
+      )
+
+    assert {:ok, receiver, events} =
+             HandshakeScheduler.receive_datagram(receiver, effect.bytes, 10)
+
+    assert [%{type: :crypto, offset: 0, bytes: <<1, 2>>}] = events
+    assert receiver.tls.tls.received == [<<1, 2>>]
+
+    assert {:ok, duplicate, [_duplicate_event]} =
+             HandshakeScheduler.receive_datagram(receiver, effect.bytes, 11)
+
+    assert duplicate.tls.tls.received == [<<1, 2>>]
+    assert duplicate.recovery.spaces.initial.largest_received == 0
+    assert sender.recovery.spaces.initial.sent[0].status == :queued
+  end
+
+  test "bad tags and malformed packets leave scheduler state unchanged" do
+    assert {:ok, sender, [effect]} = new()
+    {:ok, initial_read} = Protection.initial_secrets(<<1, 2, 3, 4>>, :client)
+
+    assert {:ok, receiver, []} =
+             HandshakeScheduler.new(
+               :client,
+               dcid: <<1, 2, 3, 4>>,
+               scid: <<5, 6, 7, 8>>,
+               adapter: InboundRecorded,
+               initial_read_keys: initial_read,
+               min_initial_size: 0
+             )
+
+    effect_size = byte_size(effect.bytes)
+    prefix_size = effect_size - 1
+    <<prefix::binary-size(^prefix_size), last>> = effect.bytes
+    tampered = prefix <> <<Bitwise.bxor(last, 1)>>
+    assert {:error, :bad_tag, ^receiver} = HandshakeScheduler.receive_datagram(receiver, tampered)
+
+    assert {:error, :truncated_header, ^receiver} =
+             HandshakeScheduler.receive_datagram(receiver, <<1>>)
+
+    assert sender.recovery.spaces.initial.sent[0].status == :queued
+  end
+
+  test "inbound ACK updates Recovery after authenticated decode" do
+    assert {:ok, state, [effect]} = new()
+    assert {:ok, state, [:sent]} = HandshakeScheduler.local_send(state, :initial, 0, :ok, 1)
+
+    state =
+      HandshakeScheduler.queue_ack(state, :initial, %{
+        type: :ack,
+        largest: 0,
+        delay: 0,
+        ranges: [{0, 0}]
+      })
+
+    assert {:ok, state, [ack_effect]} = HandshakeScheduler.schedule(state)
+
+    {:ok, read_keys} = Protection.initial_secrets(<<1, 2, 3, 4>>, :client)
+    receiver = %{state | read_keys: %{initial: read_keys}}
+
+    assert {:ok, receiver, events} =
+             HandshakeScheduler.receive_datagram(receiver, ack_effect.bytes, 20)
+
+    assert Enum.any?(events, &(&1.type == :ack))
+    assert receiver.recovery.spaces.initial.sent[0].status == :acked
+    assert effect.packet_number == 0
   end
 end

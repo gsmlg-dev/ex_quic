@@ -162,6 +162,32 @@ defmodule QUIC.Recovery do
     end
   end
 
+  @doc "Record an authenticated packet number received in a packet-number space."
+  @spec note_received(t(), atom(), non_neg_integer()) :: {:ok, t()} | {:error, atom()}
+  def note_received(state, space, number)
+      when space in @spaces and is_integer(number) and number >= 0 do
+    current = state.spaces[space]
+
+    if number > current.largest_received do
+      ranges = merge_ranges(current.ack_ranges, [{number, number}])
+
+      {:ok,
+       %{
+         state
+         | spaces:
+             Map.put(state.spaces, space, %{
+               current
+               | largest_received: number,
+                 ack_ranges: ranges
+             })
+       }}
+    else
+      {:ok, state}
+    end
+  end
+
+  def note_received(_, _, _), do: {:error, :invalid_received_packet}
+
   @spec on_time(t(), non_neg_integer()) :: {:ok, t(), map()}
   def on_time(state, now) when is_integer(now) and now >= 0 do
     {state, lost} = detect_loss(state, now)

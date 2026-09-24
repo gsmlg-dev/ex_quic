@@ -21,6 +21,7 @@ defmodule QUIC.HandshakeScheduler do
             tls: nil,
             recovery: nil,
             keys: %{},
+            read_keys: %{},
             pending: [],
             pending_acks: %{},
             effects: [],
@@ -48,6 +49,7 @@ defmodule QUIC.HandshakeScheduler do
         tls: tls,
         recovery: recovery,
         keys: Map.put(Keyword.get(opts, :keys, %{}), :initial, initial),
+        read_keys: initial_read_keys(opts, dcid, role, initial),
         max_packet_size: Keyword.get(opts, :max_packet_size, @default_max_packet),
         min_initial_size: Keyword.get(opts, :min_initial_size, 1200),
         max_queue: Keyword.get(opts, :max_queue, 64)
@@ -119,6 +121,30 @@ defmodule QUIC.HandshakeScheduler do
       {:ok, %{state | recovery: recovery}, result}
     end
   end
+
+  @doc "Receive one authenticated protected QUIC packet without socket/runtime effects."
+  @spec receive_datagram(t(), binary(), non_neg_integer()) ::
+          {:ok, t(), [map()]} | {:error, term(), t()}
+  def receive_datagram(state, datagram, at \\ 0)
+
+  def receive_datagram(%__MODULE__{} = state, datagram, at)
+      when is_binary(datagram) and is_integer(at) and at >= 0 do
+    original = state
+
+    with {:ok, packet} <- decode_protected_packet(state, datagram),
+         {:ok, recovery} <- Recovery.note_received(state.recovery, packet.space, packet.number),
+         {:ok, next, events} <- dispatch_inbound(%{state | recovery: recovery}, packet, at) do
+      {:ok, next, events}
+    else
+      {:error, reason} -> {:error, reason, original}
+      {:error, reason, _state} -> {:error, reason, original}
+    end
+  end
+
+  def receive_datagram(state, _datagram, _at), do: {:error, :invalid_datagram, state}
+
+  @doc "Alias for callers that process one packet rather than a datagram batch."
+  def receive_packet(state, packet, at \\ 0), do: receive_datagram(state, packet, at)
 
   @doc "Return the exact retained datagram for retransmission."
   def retransmit(%__MODULE__{} = state, space, number) when space in @spaces do
@@ -389,6 +415,25 @@ defmodule QUIC.HandshakeScheduler do
     end
   end
 
+  defp initial_read_keys(opts, dcid, role, initial) do
+    case Keyword.get(opts, :initial_read_keys) do
+      %{key: _, iv: _, hp: _} = keys ->
+        keys
+
+      nil ->
+        case Protection.initial_secrets(dcid, opposite_role(role)) do
+          {:ok, keys} -> keys
+          _ -> initial
+        end
+
+      _ ->
+        initial
+    end
+  end
+
+  defp opposite_role(:client), do: :server
+  defp opposite_role(:server), do: :client
+
   defp tls_options(opts) do
     opts
     |> Keyword.drop([
@@ -399,7 +444,183 @@ defmodule QUIC.HandshakeScheduler do
       :recovery,
       :max_packet_size,
       :min_initial_size,
-      :max_queue
+      :max_queue,
+      :initial_read_keys
     ])
+  end
+
+  defp dispatch_inbound(
+         state,
+         %{level: level, space: space, number: number, plaintext: plaintext},
+         at
+       ) do
+    case Codec.decode_frames(plaintext) do
+      {:ok, frames, <<>>} -> dispatch_frames(state, level, space, number, frames, at, [])
+      {:ok, _frames, _tail} -> {:error, :trailing_frame_bytes}
+      {:error, reason} -> {:error, {:malformed_frame, reason}}
+    end
+  end
+
+  defp dispatch_frames(state, _level, _space, _number, [], _at, events),
+    do: {:ok, state, Enum.reverse(events)}
+
+  defp dispatch_frames(state, level, space, number, [frame | rest], at, events) do
+    case frame do
+      %{type: :crypto, offset: offset, data: bytes} when level in [:initial, :handshake] ->
+        case feed(state, level, offset, bytes) do
+          {:ok, next, generated} ->
+            dispatch_frames(next, level, space, number, rest, at, [
+              %{type: :crypto, level: level, offset: offset, bytes: bytes, generated: generated}
+              | events
+            ])
+
+          {:error, reason, _next, _generated} ->
+            {:error, reason}
+        end
+
+      %{type: :crypto} ->
+        {:error, {:wrong_encryption_level, :crypto, level}}
+
+      %{type: :ack} = ack ->
+        case receive_ack(state, space, ack, at) do
+          {:ok, next, result} ->
+            dispatch_frames(next, level, space, number, rest, at, [
+              %{type: :ack, result: result} | events
+            ])
+
+          {:error, reason} ->
+            {:error, {:invalid_ack, reason}}
+        end
+
+      %{type: :handshake_done} when level == :application ->
+        dispatch_frames(state, level, space, number, rest, at, [%{type: :handshake_done} | events])
+
+      %{type: :handshake_done} ->
+        {:error, {:wrong_encryption_level, :handshake_done, level}}
+
+      %{type: type} when type in [:connection_close, :application_close, :ping] ->
+        dispatch_frames(state, level, space, number, rest, at, [frame | events])
+
+      _ ->
+        dispatch_frames(state, level, space, number, rest, at, [frame | events])
+    end
+  end
+
+  defp decode_protected_packet(state, datagram) do
+    with {:ok, parsed} <- parse_protected_header(state, datagram),
+         keys when is_map(keys) <- read_key(state, parsed.level),
+         packet <- binary_part(datagram, 0, parsed.packet_length),
+         {:ok, unprotected, pn_len} <-
+           Protection.remove_header_protection(
+             packet,
+             parsed.pn_offset,
+             keys.hp,
+             keys.hp_algorithm
+           ),
+         pn_offset <- parsed.pn_offset,
+         <<_first, _prefix::binary-size(^pn_offset - 1), pn_bytes::binary-size(^pn_len),
+           ciphertext::binary>> <- unprotected,
+         truncated <- :binary.decode_unsigned(pn_bytes),
+         largest <- state.recovery.spaces[parsed.space].largest_received,
+         {:ok, number} <- reconstruct_inbound(truncated, largest, pn_len),
+         aad_size <- parsed.pn_offset + pn_len,
+         aad <- binary_part(unprotected, 0, aad_size),
+         {:ok, plaintext} <- Protection.aead_decrypt(keys.key, keys.iv, number, aad, ciphertext) do
+      {:ok, Map.merge(parsed, %{number: number, plaintext: plaintext})}
+    else
+      nil -> {:error, :missing_read_key}
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :malformed_protected_packet}
+    end
+  end
+
+  defp reconstruct_inbound(truncated, -1, _pn_len), do: {:ok, truncated}
+
+  defp reconstruct_inbound(truncated, largest, pn_len)
+       when truncated <= largest and largest - truncated < 1 <<< (pn_len * 8 - 1),
+       do: {:ok, truncated}
+
+  defp reconstruct_inbound(truncated, largest, pn_len),
+    do: Codec.reconstruct_packet_number(truncated, largest, pn_len)
+
+  defp read_key(state, :initial) do
+    case state.read_keys[:initial] || state.read_keys do
+      %{key: _, iv: _, hp: _} = keys -> Map.put_new(keys, :hp_algorithm, :aes_128_gcm)
+      keys -> keys
+    end
+  end
+
+  defp read_key(state, level), do: get_in(state.keys, [level, :read])
+
+  defp parse_protected_header(state, <<first, version::32, rest::binary>> = packet)
+       when (first &&& 0x80) != 0 do
+    if version != 1,
+      do: {:error, :unsupported_version},
+      else: parse_long_header(state, first, rest, packet)
+  end
+
+  defp parse_protected_header(state, <<first, _rest::binary>> = packet)
+       when (first &&& 0x80) == 0 do
+    dcid_len = byte_size(state.dcid)
+    pn_offset = 1 + dcid_len
+
+    if byte_size(packet) < pn_offset + 4 + 16,
+      do: {:error, :truncated_header},
+      else:
+        {:ok,
+         %{
+           level: :application,
+           space: :application,
+           pn_offset: pn_offset,
+           packet_length: byte_size(packet)
+         }}
+  end
+
+  defp parse_protected_header(_, _), do: {:error, :truncated_header}
+
+  defp parse_long_header(state, first, rest, packet) do
+    type = first >>> 4 &&& 0x03
+
+    with {:ok, dcid, rest} <- take_cid(rest),
+         {:ok, scid, rest} <- take_cid(rest),
+         :ok <- validate_cids(state, dcid, scid),
+         {:ok, rest} <- maybe_skip_token(type, rest),
+         {:ok, length, after_length} <- Codec.decode_varint(rest),
+         true <- length >= 1 and byte_size(after_length) >= length,
+         pn_offset <- byte_size(packet) - byte_size(after_length),
+         {:ok, level} <- long_level(type) do
+      {:ok,
+       %{level: level, space: level, pn_offset: pn_offset, packet_length: pn_offset + length}}
+    else
+      false -> {:error, :truncated_packet}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp take_cid(<<length, rest::binary>>) when length <= 20 and byte_size(rest) >= length,
+    do: {:ok, binary_part(rest, 0, length), binary_part(rest, length, byte_size(rest) - length)}
+
+  defp take_cid(_), do: {:error, :malformed_connection_id}
+
+  defp maybe_skip_token(0, rest) do
+    with {:ok, length, rest} <- Codec.decode_varint(rest), true <- byte_size(rest) >= length do
+      {:ok, binary_part(rest, length, byte_size(rest) - length)}
+    else
+      false -> {:error, :truncated_token}
+      error -> error
+    end
+  end
+
+  defp maybe_skip_token(2, rest), do: {:ok, rest}
+  defp maybe_skip_token(_, _), do: {:error, :unsupported_packet_type}
+
+  defp long_level(0), do: {:ok, :initial}
+  defp long_level(2), do: {:ok, :handshake}
+  defp long_level(_), do: {:error, :unsupported_packet_type}
+
+  defp validate_cids(state, dcid, scid) do
+    if dcid == state.scid or dcid == state.dcid or scid == state.scid or scid == state.dcid,
+      do: :ok,
+      else: {:error, :wrong_connection_id}
   end
 end
