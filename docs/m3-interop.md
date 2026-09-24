@@ -239,6 +239,15 @@ Negative increment local gates: formatting, warnings-as-errors compilation,
 handshake was rerun after the runner changes and passed. All six final negative
 cells exited 0; the earlier harness failures are described above.
 
+## Independent raw packet negatives
+
+`mix run scripts/interop/raw_negative.exs` passed on 2026-09-24. A separate
+UDP socket sent reserved-bit, fixed-bit, and truncated Initial datagrams to an
+ex_quic server endpoint. The endpoint reported zero routes, zero Retry sends,
+and no UDP responses for all three inputs. This does not cover authenticated
+transport-parameter or Finished mutations, which require decrypting and
+re-protecting a captured handshake packet.
+
 ## Reverse-role impairment revalidation
 
 On 2026-09-24, the server-role runner was revalidated against aioquic 1.2.0
