@@ -10,12 +10,16 @@ defmodule QUIC.Endpoint do
   use GenServer
   alias QUIC.{Codec, Connection, TransportParameters, Retry, Protection}
   alias QUIC.IO.GenUDP
+  alias QUIC.IO.ExternalWriter
 
   @cid_length 8
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
   def local(pid), do: GenServer.call(pid, :local)
   def connections(pid), do: GenServer.call(pid, :connections)
   def stats(pid), do: GenServer.call(pid, :stats)
+
+  def receive_datagram(pid, remote, bytes, at),
+    do: GenServer.call(pid, {:datagram, remote, bytes, at})
 
   @impl true
   def init(opts) do
@@ -30,8 +34,7 @@ defmodule QUIC.Endpoint do
          is_boolean(retry) and (not retry or role == :server) and
          is_integer(retry_limit) and retry_limit in 1..10_000 and
          is_integer(retry_ttl) and retry_ttl in 1..60_000_000 do
-      with {:ok, socket} <-
-             GenUDP.open(Keyword.take(opts, [:ip, :port]) ++ [owner: self(), role: role]) do
+      with {:ok, io} <- open_io(opts, role) do
         data = %{
           role: role,
           retry: retry,
@@ -42,8 +45,12 @@ defmodule QUIC.Endpoint do
           retry_count: 0,
           retry_sent: 0,
           retry_validated: 0,
-          socket: socket,
-          monitor: Process.monitor(socket),
+          socket: io.socket,
+          monitor: io.monitor,
+          io_module: io.module,
+          io_writer: io.writer,
+          local: io.local,
+          external: io.external,
           opts: opts,
           max: max,
           routes: %{},
@@ -66,7 +73,7 @@ defmodule QUIC.Endpoint do
               {:ok, data}
 
             {:error, reason} ->
-              GenUDP.close(socket)
+              close_io(io)
               {:stop, reason}
           end
         end
@@ -77,7 +84,12 @@ defmodule QUIC.Endpoint do
   end
 
   @impl true
-  def handle_call(:local, _from, data), do: {:reply, GenUDP.local(data.socket), data}
+  def handle_call(:local, _from, %{local: local} = data), do: {:reply, local, data}
+
+  def handle_call({:datagram, remote, bytes, at}, _from, data)
+      when is_tuple(remote) and is_binary(bytes) and is_integer(at) do
+    {:reply, :ok, route(data, remote, bytes, at)}
+  end
 
   def handle_call(:connections, _from, data) do
     entries =
@@ -239,7 +251,7 @@ defmodule QUIC.Endpoint do
            role: data.role,
            address_validated: retry_scid != nil,
            owner: self(),
-           io: {GenUDP, data.socket},
+           io: {data.io_module, data.io_writer},
            remote: remote,
            handshake_timeout: Keyword.get(data.opts, :handshake_timeout, 10_000),
            idle_timeout: Keyword.get(data.opts, :idle_timeout, 30_000),
@@ -340,7 +352,53 @@ defmodule QUIC.Endpoint do
   @impl true
   def terminate(_, data) do
     Enum.each(data.connections, fn {pid, _} -> Process.exit(pid, :shutdown) end)
-    if Process.alive?(data.socket), do: GenUDP.close(data.socket)
+    close_io(data)
     :ok
   end
+
+  defp open_io(opts, role) do
+    case Keyword.get(opts, :io) do
+      {:external, local, send_fun}
+      when role == :server and is_tuple(local) and is_function(send_fun, 2) ->
+        with {:ok, writer} <- ExternalWriter.start_link(owner: self(), send_fun: send_fun) do
+          {:ok,
+           %{
+             socket: nil,
+             monitor: nil,
+             module: ExternalWriter,
+             writer: writer,
+             local: local,
+             external: true
+           }}
+        end
+
+      {:external, _local, _send_fun} ->
+        {:error, :invalid_external_endpoint}
+
+      nil ->
+        with {:ok, socket} <-
+               GenUDP.open(Keyword.take(opts, [:ip, :port]) ++ [owner: self(), role: role]) do
+          {:ok,
+           %{
+             socket: socket,
+             monitor: Process.monitor(socket),
+             module: GenUDP,
+             writer: socket,
+             local: GenUDP.local(socket),
+             external: false
+           }}
+        end
+    end
+  end
+
+  defp close_io(%{external: true, io_writer: writer}) when is_pid(writer),
+    do: ExternalWriter.close(writer)
+
+  defp close_io(%{external: false, socket: socket}) when is_pid(socket),
+    do: GenUDP.close(socket)
+
+  defp close_io(%{external: true, writer: writer}) when is_pid(writer),
+    do: ExternalWriter.close(writer)
+
+  defp close_io(_), do: :ok
 end

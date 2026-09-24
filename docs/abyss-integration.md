@@ -14,7 +14,7 @@ The Abyss patch adds a general `datagram_dispatcher` configuration option. Omitt
 
 The listener still blocks in `recv(:infinity)`. A separate bounded writer owns egress admission and reports local send results while the listener remains blocked. Routes are monitored and removed when their connection process exits. See `gsmlg-dev/abyss@0de0b8a` and `docs/dispatcher.md` in that repository.
 
-The adapter performs bounded admission and hands data to `QUIC.Endpoint`. New connections are admitted only after minimal structural/version checks and a resource reservation. Established routes use destination CID; a provisional map covers Initial packets before the selected server CID becomes usable. Untrusted CID fields are routing hints, not authentication.
+`QUIC.AbyssDispatcher` is the dependency-free callback adapter in this repository. It starts an externally owned `QUIC.Endpoint`, forwards each datagram through its CID router, and uses the injected `send_fun` for egress. New connections are admitted only after minimal structural/version checks and a resource reservation. Established routes use destination CID; a provisional map covers Initial packets before the selected server CID becomes usable. Untrusted CID fields are routing hints, not authentication.
 
 In terminate mode, observe the ClientHello inside the admitted connection using the shared reassembly path; avoid a second always-on inspector doing duplicate decryption. Optional inspect-only mode sends observations but never creates a TLS server or transmits protocol responses.
 
