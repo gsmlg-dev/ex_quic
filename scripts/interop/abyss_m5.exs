@@ -47,39 +47,74 @@ client_tls = [
 pool = Abyss.Server.listener_pool_pid(server)
 [listener] = Abyss.ListenerPool.listener_pids(pool)
 {:ok, address} = Abyss.Listener.listener_info_cached(listener)
-{:ok, client} = QUIC.Endpoint.start_link(role: :client, remote: address, tls: client_tls)
+{:ok, client_one} = QUIC.Endpoint.start_link(role: :client, remote: address, tls: client_tls)
+{:ok, client_two} = QUIC.Endpoint.start_link(role: :client, remote: address, tls: client_tls)
 
 deadline = System.monotonic_time(:millisecond) + 12_000
 
+established? = fn endpoint ->
+  case QUIC.Endpoint.connections(endpoint) do
+    [%{pid: pid}] ->
+      status = QUIC.Connection.status(pid)
+      status.phase == :established and status.quic_confirmed
+
+    _ ->
+      false
+  end
+end
+
+wait_until = fn wait_until, predicate, deadline ->
+  cond do
+    predicate.() ->
+      :ok
+
+    System.monotonic_time(:millisecond) >= deadline ->
+      :timeout
+
+    true ->
+      Process.sleep(20)
+      wait_until.(wait_until, predicate, deadline)
+  end
+end
+
+first_pair =
+  wait_until.(
+    wait_until,
+    fn -> established?.(client_one) and established?.(client_two) end,
+    deadline
+  )
+
+if first_pair == :ok do
+  [%{pid: first_pid}] = QUIC.Endpoint.connections(client_one)
+  :ok = QUIC.Connection.close(first_pid)
+end
+
+second_survives = wait_until.(wait_until, fn -> established?.(client_two) end, deadline)
+
+:ok = Abyss.suspend(server)
+:ok = Abyss.resume(server)
+pool = Abyss.Server.listener_pool_pid(server)
+[restarted_listener] = Abyss.ListenerPool.listener_pids(pool)
+{:ok, restarted_address} = Abyss.Listener.listener_info_cached(restarted_listener)
+
+{:ok, client_three} =
+  QUIC.Endpoint.start_link(role: :client, remote: restarted_address, tls: client_tls)
+
+third_ready = wait_until.(wait_until, fn -> established?.(client_three) end, deadline)
+
 result =
-  Stream.repeatedly(fn ->
-    case QUIC.Endpoint.connections(client) do
-      [%{pid: pid}] ->
-        status = QUIC.Connection.status(pid)
-        if status.phase == :established and status.quic_confirmed, do: :ok, else: :pending
+  if first_pair == :ok and second_survives == :ok and third_ready == :ok,
+    do: :ok,
+    else:
+      {:error,
+       %{first_pair: first_pair, second_survives: second_survives, third_ready: third_ready}}
 
-      _ ->
-        :pending
-    end
-  end)
-  |> Enum.reduce_while(:pending, fn result, _acc ->
-    cond do
-      result == :ok ->
-        {:halt, :ok}
-
-      System.monotonic_time(:millisecond) >= deadline ->
-        {:halt, {:error, QUIC.Endpoint.stats(client)}}
-
-      true ->
-        Process.sleep(20)
-        {:cont, :pending}
-    end
-  end)
-
-IO.inspect(%{result: result, address: address, client: QUIC.Endpoint.stats(client)},
+IO.inspect(%{result: result, address: address, restarted_address: restarted_address},
   label: "M5_ABYSS_RESULT"
 )
 
-GenServer.stop(client)
+GenServer.stop(client_one)
+GenServer.stop(client_two)
+GenServer.stop(client_three)
 Supervisor.stop(server)
 if result == :ok, do: :ok, else: System.halt(1)

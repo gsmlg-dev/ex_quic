@@ -12,8 +12,8 @@ ABYSS_CHECKOUT=/Users/gao/Workspace/gsmlg-dev/ex_quic/.trees/abyss-m5 \
   mix run scripts/interop/abyss_m5.exs
 ```
 
-Observed result: exit `0`, client phase `:established`, QUIC confirmation true,
-one client route, and no admission or endpoint error. This is the first real
-QUIC-through-Abyss handshake evidence. Multi-client isolation, stream transfer,
-close-one/keep-other, listener restart, writer failure, and ordinary UDP
-regression remain open M5 acceptance cells.
+The script now runs two concurrent clients, closes one, resumes the listener on
+a new port, and connects a third client after restart. A passing run requires
+both initial clients to establish, the second to remain established after the
+first closes, and the third to establish through the restarted listener.
+Writer failure, stream transfer, and ordinary UDP regression remain open cells.

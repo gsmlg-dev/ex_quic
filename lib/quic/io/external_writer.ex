@@ -3,8 +3,9 @@ defmodule QUIC.IO.ExternalWriter do
   Bounded integration writer backed by a caller-owned send function.
 
   The function returns `:ok`, `{:ok, monotonic_microseconds}`, or
-  `{:error, reason}`. The writer owns no socket and never exposes its callback
-  to the connection process.
+  `{:error, reason}`. `{:ok, ref}` is deliberately rejected: queue admission
+  is not local send completion. The writer owns no socket and never exposes
+  its callback to the connection process.
   """
   use GenServer
 
@@ -64,7 +65,6 @@ defmodule QUIC.IO.ExternalWriter do
 
   defp normalize_result(:ok), do: {:ok, monotonic_time()}
   defp normalize_result({:ok, at}) when is_integer(at), do: {:ok, at}
-  defp normalize_result({:ok, _admission_ref}), do: {:ok, monotonic_time()}
   defp normalize_result({:error, _} = error), do: error
   defp normalize_result(other), do: {:error, {:invalid_send_result, other}}
 end

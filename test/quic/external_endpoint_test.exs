@@ -55,6 +55,19 @@ defmodule QUIC.ExternalEndpointTest do
     assert {:error, :closed} = QUIC.IO.ExternalWriter.send(writer, <<1>>, {{127, 0, 0, 1}, 1})
   end
 
+  test "external writer does not treat an admission reference as local success" do
+    {:ok, writer} =
+      QUIC.IO.ExternalWriter.start_link(
+        owner: self(),
+        send_fun: fn _remote, _bytes -> {:ok, make_ref()} end
+      )
+
+    on_exit(fn -> if Process.alive?(writer), do: GenServer.stop(writer) end)
+
+    assert {:error, {:invalid_send_result, {:ok, _}}} =
+             QUIC.IO.ExternalWriter.send(writer, <<1>>, {{127, 0, 0, 1}, 1})
+  end
+
   test "Abyss callback adapter owns the QUIC endpoint and uses injected egress" do
     parent = self()
     remote = {{127, 0, 0, 1}, 45_002}
