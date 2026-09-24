@@ -18,7 +18,23 @@ connection-owned ready queue until `consume/3` is called. Queue exhaustion
 returns `:receive_queue_limit`; `QUIC.Connection.send_stream/5` returns
 `:admission_timeout` when the bounded admission call times out.
 
-Local evidence: `mix format --check-formatted`,
-`mix compile --warnings-as-errors`, `git diff --check`, and `mix test` passed
-with 138 tests. Independent peer capture comparing ClientHello, JA3/JA4,
-transport parameters, and stream transfer was not run in this slice.
+Profiles are now accepted by `QUIC.Endpoint` through the public `profile:`
+option. Connection-specific source CID transport parameters replace the profile
+placeholder before `SSL.QUIC` materialization, while the profile's ordered
+cipher/group policy and packet-size policy remain active.
+
+Independent aioquic 1.2.0 runs passed for both profiles:
+
+- `INTEROP_PROFILE=ordered mix run scripts/interop/run.exs client /tmp/ex_quic_profile_ordered_20260924`
+- `INTEROP_PROFILE=compact mix run scripts/interop/run.exs client /tmp/ex_quic_profile_compact_20260924`
+
+The captured Initial ClientHello observations were:
+
+| Profile | JA3 | JA4 | Stream/handshake result |
+| --- | --- | --- | --- |
+| ordered | `1b123fa8bb66f306d88417cb151ed447` | `q13i0207ec_62ed6f6ca7ad_7ce92f1763d4` | aioquic handshake and QUIC confirmation passed |
+| compact | `c6d419ac70651660d495a2e2b83241c2` | `q13i0207ec_62ed6f6ca7ad_7ce92f1763d4` | aioquic handshake and QUIC confirmation passed |
+
+JA4 remains equal because its normalized fields do not encode the reordered
+cipher/group policy; the JA3 and raw ClientHello observations distinguish the
+profiles. The captures are transport-boundary JSONL records, not kernel PCAPs.

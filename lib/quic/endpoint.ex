@@ -255,9 +255,11 @@ defmodule QUIC.Endpoint do
     dcid = peer_scid || original_dcid
 
     with false <- Map.has_key?(data.routes, scid),
+         profile <- Keyword.get(data.opts, :profile),
+         tls_opts <- profile_tls_options(Keyword.get(data.opts, :tls, []), profile),
          {:ok, tls} <-
            materialize(
-             Keyword.get(data.opts, :tls, []),
+             tls_opts,
              data.role,
              original_dcid,
              scid,
@@ -280,7 +282,8 @@ defmodule QUIC.Endpoint do
                original_dcid: original_dcid,
                initial_key_dcid: retry_scid || original_dcid,
                retry_scid: retry_scid,
-               streams: Keyword.get(data.opts, :streams, [])
+               streams: Keyword.get(data.opts, :streams, []),
+               max_packet_size: profile_packet_size(profile)
              ] ++ tls
          ],
          {:ok, pid} <- Connection.start(opts),
@@ -324,6 +327,7 @@ defmodule QUIC.Endpoint do
     entries = if retry_scid, do: [%{id: 0x10, value: retry_scid} | entries], else: entries
 
     with {:ok, generated} <- TransportParameters.encode(entries, role: role),
+         tls <- apply_profile(tls, generated),
          raw <- Keyword.get(tls, :transport_parameters, generated),
          {:ok, decoded} <- TransportParameters.decode(raw),
          :ok <-
@@ -336,6 +340,34 @@ defmodule QUIC.Endpoint do
       {:ok, Keyword.put(tls, :transport_parameters, raw)}
     end
   end
+
+  defp apply_profile(tls, generated) do
+    case Keyword.get(tls, :profile) do
+      profile when is_struct(profile, SSL.ClientHello.WireProfile) ->
+        Keyword.put(tls, :profile, replace_profile_transport_parameters(profile, generated))
+
+      _ ->
+        tls
+    end
+  end
+
+  defp profile_tls_options(tls, %{tls: _} = profile),
+    do: Keyword.put(tls, :profile, profile.tls)
+
+  defp profile_tls_options(tls, _), do: tls
+
+  defp replace_profile_transport_parameters(profile, generated) do
+    extensions =
+      Enum.map(profile.extensions, fn
+        {:raw, 57, _} -> {:raw, 57, generated}
+        other -> other
+      end)
+
+    %{profile | extensions: extensions}
+  end
+
+  defp profile_packet_size(%{max_packet_size: size}) when is_integer(size), do: size
+  defp profile_packet_size(_), do: 1_350
 
   defp deliver(data, entry, bytes, at) do
     case Connection.deliver(entry.pid, entry.generation, bytes, at) do

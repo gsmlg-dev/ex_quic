@@ -923,8 +923,7 @@ defmodule QUIC.HandshakeScheduler do
   defp opposite_role(:server), do: :client
 
   defp tls_options(opts) do
-    opts
-    |> Keyword.drop([
+    Keyword.drop(opts, [
       :dcid,
       :original_dcid,
       :initial_key_dcid,

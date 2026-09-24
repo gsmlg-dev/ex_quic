@@ -4,6 +4,20 @@ defmodule QUIC.Interop.Run do
 
   def run(mode, directory) do
     scenario = System.get_env("INTEROP_SCENARIO", "baseline")
+    profile_name = System.get_env("INTEROP_PROFILE")
+
+    profile =
+      case profile_name do
+        nil ->
+          nil
+
+        name when name in ["ordered", "compact"] ->
+          {:ok, compiled} = QUIC.Profile.compile(String.to_existing_atom(name))
+          compiled
+
+        other ->
+          raise("unsupported profile: #{other}")
+      end
 
     impairments = [
       "drop_initial",
@@ -35,7 +49,7 @@ defmodule QUIC.Interop.Run do
     client_tls = [
       cacerts: [der.("root.pem")],
       reference_identity: {:dns_id, "example.test"},
-      alpn: ["ex-quic-test"]
+      alpn: [if(profile, do: "ex-quic", else: "ex-quic-test")]
     ]
 
     client_tls =
@@ -108,6 +122,8 @@ defmodule QUIC.Interop.Run do
         do: args ++ ["--alpn", "incompatible"],
         else: args
 
+    args = if profile, do: args ++ ["--alpn", "ex-quic"], else: args
+
     peer =
       Port.open(
         {:spawn_executable, System.find_executable("uv")},
@@ -117,7 +133,9 @@ defmodule QUIC.Interop.Run do
     deadline = System.monotonic_time(:millisecond) + 12_000
 
     {endpoint, messages} =
-      if endpoint, do: {endpoint, []}, else: start_client(peer, client_tls, deadline, [])
+      if endpoint,
+        do: {endpoint, []},
+        else: start_client(peer, client_tls, profile, deadline, [])
 
     result = await(peer, endpoint, mode, deadline, messages, false, scenario in negatives)
     observed_retry = Enum.any?(result.events, &match?(%{"event" => "retry"}, &1))
@@ -144,29 +162,30 @@ defmodule QUIC.Interop.Run do
     if result.passed, do: :ok, else: System.halt(1)
   end
 
-  defp start_client(peer, tls, deadline, messages) do
+  defp start_client(peer, tls, profile, deadline, messages) do
     if System.monotonic_time(:millisecond) >= deadline, do: raise("peer startup timed out")
 
     receive do
       {^peer, {:data, {:eol, line}}} ->
         case JSON.decode(line) do
           {:ok, %{"event" => "listening", "port" => port} = message} ->
-            {:ok, endpoint} =
-              Endpoint.start_link(role: :client, remote: {{127, 0, 0, 1}, port}, tls: tls)
+            opts = [role: :client, remote: {{127, 0, 0, 1}, port}, tls: tls]
+            opts = if profile, do: Keyword.put(opts, :profile, profile), else: opts
+            {:ok, endpoint} = Endpoint.start_link(opts)
 
             {endpoint, messages ++ [message]}
 
           {:ok, message} ->
-            start_client(peer, tls, deadline, messages ++ [message])
+            start_client(peer, tls, profile, deadline, messages ++ [message])
 
           _ ->
-            start_client(peer, tls, deadline, messages ++ [line])
+            start_client(peer, tls, profile, deadline, messages ++ [line])
         end
 
       {^peer, {:exit_status, code}} ->
         raise("peer exited: #{code}")
     after
-      100 -> start_client(peer, tls, deadline, messages)
+      100 -> start_client(peer, tls, profile, deadline, messages)
     end
   end
 
