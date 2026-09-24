@@ -248,6 +248,13 @@ and no UDP responses for all three inputs. This does not cover authenticated
 transport-parameter or Finished mutations, which require decrypting and
 re-protecting a captured handshake packet.
 
+The runtime now validates authenticated transport parameters during TLS action
+processing and terminates the connection with a structured error before it can
+become established. A separate aioquic mutation probe observed the local
+`invalid_max_udp_payload_size` error and zero retained routes, but also observed
+a pre-rejection handshake packet; the no-reflection requirement remains open
+pending a provider-level ordering solution.
+
 ## Reverse-role impairment revalidation
 
 On 2026-09-24, the server-role runner was revalidated against aioquic 1.2.0
