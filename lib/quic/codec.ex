@@ -43,7 +43,7 @@ defmodule QUIC.Codec do
     expected = largest + 1
     window = 1 <<< (pn_len * 8)
     half = div(window, 2)
-    candidate = (expected &&& window - 1) ||| truncated
+    candidate = (expected &&& bnot(window - 1)) ||| truncated
 
     candidate =
       cond do
@@ -208,6 +208,33 @@ defmodule QUIC.Codec do
   defp encode_frames([%{type: :handshake_done} | rest], acc),
     do: encode_frames(rest, [<<0x1E>> | acc])
 
+  defp encode_frames(
+         [
+           %{
+             type: :new_connection_id,
+             sequence: sequence,
+             retire_prior_to: prior,
+             cid: cid,
+             token: token
+           }
+           | rest
+         ],
+         acc
+       )
+       when is_binary(cid) and byte_size(cid) in 1..20 and is_binary(token) and
+              byte_size(token) == 16 do
+    with {:ok, seq} <- encode_varint(sequence), {:ok, retire} <- encode_varint(prior) do
+      encode_frames(rest, [
+        <<0x18, seq::binary, retire::binary, byte_size(cid), cid::binary, token::binary>> | acc
+      ])
+    end
+  end
+
+  defp encode_frames([%{type: :retire_connection_id, sequence: sequence} | rest], acc) do
+    with {:ok, seq} <- encode_varint(sequence),
+         do: encode_frames(rest, [<<0x19, seq::binary>> | acc])
+  end
+
   defp encode_frames([_ | _], _), do: {:error, :unsupported_frame}
 
   @spec decode_frames(binary(), keyword()) :: {:ok, [map()], binary()} | {:error, atom()}
@@ -272,6 +299,35 @@ defmodule QUIC.Codec do
     else
       _ -> {:error, :malformed_crypto_frame}
     end
+  end
+
+  defp decode_frames(<<0x18, rest::binary>>, acc, limit) do
+    with {:ok, sequence, rest} <- decode_varint(rest),
+         {:ok, prior, <<length, rest::binary>>} <- decode_varint(rest),
+         true <- length in 1..20,
+         <<cid::binary-size(^length), token::binary-size(16), tail::binary>> <- rest do
+      frame = %{
+        type: :new_connection_id,
+        sequence: sequence,
+        retire_prior_to: prior,
+        cid: cid,
+        token: token
+      }
+
+      decode_frames(tail, [frame | acc], limit - 1)
+    else
+      _ -> {:error, :malformed_new_connection_id}
+    end
+  end
+
+  defp decode_frames(<<0x19, rest::binary>>, acc, limit) do
+    with {:ok, sequence, tail} <- decode_varint(rest),
+         do:
+           decode_frames(
+             tail,
+             [%{type: :retire_connection_id, sequence: sequence} | acc],
+             limit - 1
+           )
   end
 
   defp decode_frames(<<0x1C, rest::binary>>, acc, limit) do

@@ -4,6 +4,33 @@ defmodule QUIC.ProtectionTest do
 
   @dcid Base.decode16!("8394c8f03e515708", case: :lower)
 
+  test "ChaCha header protection matches the RFC 8439 section 2.3.2 block" do
+    key = :binary.list_to_bin(Enum.to_list(0..31))
+    nonce = Base.decode16!("000000090000004A00000000")
+    sample = <<1::little-32, nonce::binary>>
+
+    assert {:ok, <<0x10, 0xF1, 0xE7, 0xE4, 0xD1>>} =
+             QUIC.Protection.header_protection_mask(key, sample, :chacha20_poly1305)
+  end
+
+  test "packet AEAD uses the installed algorithm for every supported TLS suite" do
+    for {algorithm, length} <- [aes_128_gcm: 16, aes_256_gcm: 32, chacha20_poly1305: 32] do
+      key = :binary.copy(<<1>>, length)
+      iv = <<0::96>>
+
+      {cipher, tag} =
+        :crypto.crypto_one_time_aead(algorithm, key, <<42::96>>, "QUIC", "header", 16, true)
+
+      expected = cipher <> tag
+
+      assert {:ok, ^expected} =
+               QUIC.Protection.aead_encrypt(key, iv, 42, "header", "QUIC", algorithm)
+
+      assert {:ok, "QUIC"} =
+               QUIC.Protection.aead_decrypt(key, iv, 42, "header", expected, algorithm)
+    end
+  end
+
   test "short headers unmask all five low bits including bit four" do
     # AES-128 with zero key and block 1 gives 58e2fccefa7e3061367f1d57a4e7455a.
     # The fifth low mask bit is set, exposing a long-header mask used on a short header.

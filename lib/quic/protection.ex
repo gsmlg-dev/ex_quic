@@ -69,13 +69,13 @@ defmodule QUIC.Protection do
 
   @spec aead_encrypt(binary(), binary(), non_neg_integer(), binary(), binary()) ::
           {:ok, binary()} | {:error, atom()}
-  def aead_encrypt(key, iv, packet_number, aad, plaintext),
-    do: aead(:encrypt, key, iv, packet_number, aad, plaintext)
+  def aead_encrypt(key, iv, packet_number, aad, plaintext, algorithm \\ :aes_128_gcm),
+    do: aead(:encrypt, key, iv, packet_number, aad, plaintext, algorithm)
 
   @spec aead_decrypt(binary(), binary(), non_neg_integer(), binary(), binary()) ::
           {:ok, binary()} | {:error, atom()}
-  def aead_decrypt(key, iv, packet_number, aad, ciphertext),
-    do: aead(:decrypt, key, iv, packet_number, aad, ciphertext)
+  def aead_decrypt(key, iv, packet_number, aad, ciphertext, algorithm \\ :aes_128_gcm),
+    do: aead(:decrypt, key, iv, packet_number, aad, ciphertext, algorithm)
 
   @spec header_protection_mask(
           binary(),
@@ -100,8 +100,9 @@ defmodule QUIC.Protection do
            :crypto.crypto_one_time(
              :chacha20,
              hp,
-             <<nonce::binary, counter::little-32>>,
-             <<0, 0, 0, 0, 0>>
+             <<counter::little-32, nonce::binary>>,
+             <<0, 0, 0, 0, 0>>,
+             true
            )
            |> binary_part(0, 5)}
 
@@ -203,9 +204,9 @@ defmodule QUIC.Protection do
 
   def validate_retry(_, _), do: {:error, :truncated_retry}
 
-  defp aead(mode, key, iv, pn, aad, data)
+  defp aead(mode, key, iv, pn, aad, data, algorithm)
        when is_binary(key) and is_binary(iv) and is_integer(pn) and pn >= 0 and is_binary(aad) and
-              is_binary(data) do
+              is_binary(data) and algorithm in [:aes_128_gcm, :aes_256_gcm, :chacha20_poly1305] do
     if byte_size(iv) != 12 do
       {:error, :invalid_iv}
     else
@@ -217,7 +218,7 @@ defmodule QUIC.Protection do
         case mode do
           :encrypt ->
             {cipher, tag} =
-              :crypto.crypto_one_time_aead(:aes_128_gcm, key, nonce, data, aad, 16, true)
+              :crypto.crypto_one_time_aead(algorithm, key, nonce, data, aad, 16, true)
 
             {:ok, cipher <> tag}
 
@@ -225,7 +226,7 @@ defmodule QUIC.Protection do
             cipher = binary_part(data, 0, byte_size(data) - 16)
             tag = binary_part(data, byte_size(data) - 16, 16)
 
-            case :crypto.crypto_one_time_aead(:aes_128_gcm, key, nonce, cipher, aad, tag, false) do
+            case :crypto.crypto_one_time_aead(algorithm, key, nonce, cipher, aad, tag, false) do
               :error -> {:error, :bad_tag}
               plain -> {:ok, plain}
             end
@@ -241,7 +242,7 @@ defmodule QUIC.Protection do
     end
   end
 
-  defp aead(_, _, _, _, _, _), do: {:error, :invalid_aead_input}
+  defp aead(_, _, _, _, _, _, _), do: {:error, :invalid_aead_input}
 
   defp hkdf_extract(salt, input), do: :crypto.mac(:hmac, :sha256, salt, input)
   defp hkdf_expand(prk, info, length), do: hkdf_expand_fallback(prk, info, length)

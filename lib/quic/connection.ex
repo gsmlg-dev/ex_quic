@@ -99,6 +99,8 @@ defmodule QUIC.Connection do
 
     status = %{
       phase: phase,
+      cipher_suite: TLSDriver.info(data.scheduler.tls)[:cipher_suite],
+      alpn: TLSDriver.info(data.scheduler.tls)[:alpn],
       tls_complete: data.scheduler.tls.facts.tls_complete,
       parameters_valid: data.parameters_valid,
       quic_confirmed: data.scheduler.tls.facts.quic_confirmed,

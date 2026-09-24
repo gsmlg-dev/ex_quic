@@ -1,6 +1,32 @@
 defmodule QUIC.CodecTest do
   use ExUnit.Case, async: true
 
+  test "NEW_CONNECTION_ID and RETIRE_CONNECTION_ID preserve their bounded wire fields" do
+    frame = %{
+      type: :new_connection_id,
+      sequence: 1,
+      retire_prior_to: 0,
+      cid: <<9, 8>>,
+      token: <<1::128>>
+    }
+
+    wire = <<0x18, 1, 0, 2, 9, 8, 1::128, 0x19, 1>>
+    frames = [frame, %{type: :retire_connection_id, sequence: 1}]
+    assert {:ok, ^wire} = QUIC.Codec.encode_frames(frames)
+    assert {:ok, ^frames, <<>>} = QUIC.Codec.decode_frames(wire)
+
+    assert {:error, :malformed_new_connection_id} =
+             QUIC.Codec.decode_frames(<<0x18, 1, 0, 0, 0::128>>)
+
+    assert {:error, :malformed_new_connection_id} =
+             QUIC.Codec.decode_frames(<<0x18, 1, 0, 21, 0::296>>)
+  end
+
+  test "packet reconstruction retains epoch high bits across gaps and windows" do
+    assert {:ok, 4} = QUIC.Codec.reconstruct_packet_number(4, 1, 1)
+    assert {:ok, 0x204} = QUIC.Codec.reconstruct_packet_number(4, 0x201, 1)
+  end
+
   test "varint boundaries and truncation" do
     for value <- [0, 63, 64, 16_383, 16_384, 1_073_741_823, 1_073_741_824, 0x3FFF_FFFF_FFFF_FFFF] do
       assert {:ok, encoded} = QUIC.Codec.encode_varint(value)

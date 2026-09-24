@@ -9,7 +9,7 @@ defmodule QUIC.HandshakeScheduler do
 
   import Bitwise
 
-  alias QUIC.{Codec, Protection, Recovery, TLSDriver}
+  alias QUIC.{Codec, Protection, Recovery, TLSDriver, PeerCIDs}
 
   @levels [:initial, :handshake, :application]
   @spaces [:initial, :handshake, :application]
@@ -20,6 +20,7 @@ defmodule QUIC.HandshakeScheduler do
             scid: <<>>,
             original_dcid: <<>>,
             peer_initial_scid: nil,
+            peer_cids: nil,
             tls: nil,
             recovery: nil,
             keys: %{},
@@ -413,7 +414,15 @@ defmodule QUIC.HandshakeScheduler do
            }),
          header_size <- byte_size(unprotected) - byte_size(dummy_cipher),
          aad <- binary_part(unprotected, 0, header_size),
-         {:ok, ciphertext} <- Protection.aead_encrypt(keys.key, keys.iv, pn, aad, plaintext),
+         {:ok, ciphertext} <-
+           Protection.aead_encrypt(
+             keys.key,
+             keys.iv,
+             pn,
+             aad,
+             plaintext,
+             Map.get(keys, :aead, :aes_128_gcm)
+           ),
          packet <- aad <> ciphertext,
          pn_offset <- header_size - pn_len,
          {:ok, mask} <-
@@ -451,7 +460,15 @@ defmodule QUIC.HandshakeScheduler do
            <<0xC0 ||| packet_type <<< 4 ||| pn_len - 1, 1::32, byte_size(state.dcid),
              state.dcid::binary, byte_size(state.scid), state.scid::binary, length::binary>>,
          aad <- header <> <<pn::unsigned-big-integer-size(pn_len * 8)>>,
-         {:ok, ciphertext} <- Protection.aead_encrypt(keys.key, keys.iv, pn, aad, plaintext),
+         {:ok, ciphertext} <-
+           Protection.aead_encrypt(
+             keys.key,
+             keys.iv,
+             pn,
+             aad,
+             plaintext,
+             Map.get(keys, :aead, :aes_128_gcm)
+           ),
          packet <- aad <> ciphertext,
          pn_offset <- byte_size(header),
          {:ok, mask} <-
@@ -477,7 +494,15 @@ defmodule QUIC.HandshakeScheduler do
 
     with header <- <<0x40 ||| pn_len - 1, state.dcid::binary>>,
          aad <- header <> <<pn::unsigned-big-integer-size(pn_len * 8)>>,
-         {:ok, ciphertext} <- Protection.aead_encrypt(keys.key, keys.iv, pn, aad, plaintext),
+         {:ok, ciphertext} <-
+           Protection.aead_encrypt(
+             keys.key,
+             keys.iv,
+             pn,
+             aad,
+             plaintext,
+             Map.get(keys, :aead, :aes_128_gcm)
+           ),
          packet <- aad <> ciphertext,
          pn_offset <- byte_size(header),
          {:ok, mask} <-
@@ -503,7 +528,7 @@ defmodule QUIC.HandshakeScheduler do
   end
 
   defp learn_peer_cid(%{peer_initial_scid: nil} = state, %{level: :initial, scid: scid}),
-    do: %{state | peer_initial_scid: scid, dcid: scid}
+    do: %{state | peer_initial_scid: scid, dcid: scid, peer_cids: PeerCIDs.new(scid)}
 
   defp learn_peer_cid(state, _), do: state
 
@@ -688,6 +713,42 @@ defmodule QUIC.HandshakeScheduler do
             {:error, {:invalid_ack, reason}}
         end
 
+      %{type: :new_connection_id} = frame when level == :application ->
+        if state.peer_cids do
+          with {:ok, cids, retired} <- PeerCIDs.receive_id(state.peer_cids, frame) do
+            frames = Enum.map(retired, &%{type: :retire_connection_id, sequence: &1})
+            control = Enum.uniq(Map.get(state.pending_control, :application, []) ++ frames)
+
+            if length(control) <= state.max_queue do
+              next = %{
+                state
+                | peer_cids: cids,
+                  dcid: PeerCIDs.current(cids),
+                  pending_control: Map.put(state.pending_control, :application, control)
+              }
+
+              next =
+                if control == [],
+                  do: %{next | pending_control: Map.delete(next.pending_control, :application)},
+                  else: next
+
+              dispatch_frames(next, level, space, number, rest, at, [frame | events])
+            else
+              {:error, :control_queue_limit}
+            end
+          end
+        else
+          {:error, :missing_peer_connection_id}
+        end
+
+      %{type: :new_connection_id} ->
+        {:error, {:wrong_encryption_level, :new_connection_id, level}}
+
+      %{type: :retire_connection_id} ->
+        # Only local sequence zero is currently issued. Its retirement on a
+        # packet addressed to that same CID is forbidden by RFC 9000 19.16.
+        {:error, :invalid_connection_id_retirement}
+
       %{type: :handshake_done} when level == :application ->
         if state.role == :client and state.tls.facts.tls_complete do
           next = %{state | tls: TLSDriver.mark_quic_confirmed(state.tls)}
@@ -729,7 +790,15 @@ defmodule QUIC.HandshakeScheduler do
          {:ok, number} <- reconstruct_inbound(truncated, largest, pn_len),
          aad_size <- parsed.pn_offset + pn_len,
          aad <- binary_part(unprotected, 0, aad_size),
-         {:ok, plaintext} <- Protection.aead_decrypt(keys.key, keys.iv, number, aad, ciphertext) do
+         {:ok, plaintext} <-
+           Protection.aead_decrypt(
+             keys.key,
+             keys.iv,
+             number,
+             aad,
+             ciphertext,
+             Map.get(keys, :aead, :aes_128_gcm)
+           ) do
       {:ok, Map.merge(parsed, %{number: number, plaintext: plaintext})}
     else
       nil -> {:error, :missing_read_key}
@@ -739,10 +808,6 @@ defmodule QUIC.HandshakeScheduler do
   end
 
   defp reconstruct_inbound(truncated, -1, _pn_len), do: {:ok, truncated}
-
-  defp reconstruct_inbound(truncated, largest, pn_len)
-       when truncated <= largest and largest - truncated < 1 <<< (pn_len * 8 - 1),
-       do: {:ok, truncated}
 
   defp reconstruct_inbound(truncated, largest, pn_len),
     do: Codec.reconstruct_packet_number(truncated, largest, pn_len)

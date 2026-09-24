@@ -1,6 +1,6 @@
 # ex_quic — experimental QUIC v1 library
 
-This repository contains an incremental Elixir QUIC implementation and its revision 3 design. Independent network interoperability remains unverified. It uses `ex_ssl` v0.7.1 at `02eb981f59d4e182d4473e264a9f8b093ec6bf3d` on 2026-09-23.
+This repository contains an incremental Elixir QUIC implementation and its revision 3 design. Ordinary independent certificate handshakes pass in both roles; the broader interoperability matrix remains incomplete. It uses `ex_ssl` v0.7.1 at `02eb981f59d4e182d4473e264a9f8b093ec6bf3d` on 2026-09-23.
 
 The project has three mandatory goals: JA3/JA4 observation of visible QUIC ClientHello data, measured profile-controlled client behavior, and opt-in integration with the Abyss UDP server. It is not a client-only plan.
 
@@ -21,7 +21,7 @@ Use [CODEX-START.md](CODEX-START.md) in the actual ex_quic workspace. The first 
 
 ## Dependency and status
 
-`SSL.QUIC` and `SSL.Fingerprint` are real upstream APIs at the reviewed pin, not work to invent in ex_quic. Use the Git SHA initially; a GitHub release does not establish Hex publication. See [implementation progress](docs/requirements-progress.md) and [runtime evidence](docs/m3-runtime.md) for implemented surfaces and remaining gates; design documents also include future modules.
+`SSL.QUIC` and `SSL.Fingerprint` are real upstream APIs at the reviewed pin, not work to invent in ex_quic. Use the Git SHA initially; a GitHub release does not establish Hex publication. See [implementation progress](docs/requirements-progress.md) and [runtime evidence](docs/m3-runtime.md) and [independent peer evidence](docs/m3-interop.md) for implemented surfaces and remaining gates; design documents also include future modules.
 
 The upstream formatter finding is closed and the inspected supported-runtime compiler/test and TLS-reference jobs pass. Current known upstream limitations, historical macOS TCP integration failures and the absence of a whole-library security audit remain explicit in the review document.
 
