@@ -56,6 +56,22 @@ defmodule QUIC.ConnectionTest do
     def abort(state, _), do: state
   end
 
+  defmodule InvalidValueParametersTLS do
+    def new(_, _), do: {:ok, :initial, []}
+    def info(phase), do: %{receive_level: phase}
+
+    def feed(_, :initial, _),
+      do:
+        {:ok, :application,
+         [
+           # max_udp_payload_size=1199 followed by the client's initial source CID
+           {:peer_transport_parameters, <<3, 2, 0x44, 0xAF, 15, 4, 5, 6, 7, 8>>, :authenticated},
+           :handshake_complete
+         ]}
+
+    def abort(state, _), do: state
+  end
+
   defmodule FailedWriter do
     def send(_pid, _bytes, _remote), do: {:error, :writer_failed}
     def monotonic_time, do: System.monotonic_time(:microsecond)
@@ -157,6 +173,7 @@ defmodule QUIC.ConnectionTest do
   test "TLS completion cannot bypass parameter authentication or CID validation" do
     for {adapter, reason} <- [
           {InvalidParametersTLS, {:transport_parameters, :connection_id_mismatch}},
+          {InvalidValueParametersTLS, {:transport_parameters, :invalid_max_udp_payload_size}},
           {UnverifiedParametersTLS, :incomplete_authentication}
         ] do
       {:ok, writer} = GenUDP.open()
@@ -174,6 +191,7 @@ defmodule QUIC.ConnectionTest do
                Connection.deliver(conn, generation, initial.bytes, GenUDP.monotonic_time())
 
       assert_receive {:quic_closed, ^conn, ^generation, ^reason}, 1_000
+      refute_receive {:quic_udp, ^generation, _, _, _, _}, 100
       :ok = GenUDP.close(writer)
     end
   end
