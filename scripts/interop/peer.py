@@ -13,6 +13,8 @@ import sys
 import time
 
 import aioquic
+from aioquic.buffer import Buffer
+from aioquic.quic.packet import pull_quic_header, QuicPacketType
 from aioquic.asyncio.client import connect
 from aioquic.asyncio.protocol import QuicConnectionProtocol
 from aioquic.asyncio.server import QuicServer
@@ -25,8 +27,66 @@ def emit(**fields):
 
 
 class Capture:
-    def __init__(self, path):
+    def __init__(self, path, mode, scenario):
         self.file = open(path, "w")
+        self.mode, self.scenario = mode, scenario
+        self.applied = False
+        self.held = None
+        self.hold_timer = None
+
+    def route(self, direction, data, addr, deliver):
+        self.packet(direction, data, addr)
+        if self.held and direction == self.held[0]:
+            _, old, old_addr, old_deliver = self.held
+            self.held = None
+            self.hold_timer.cancel()
+            self.output(direction, data, addr, deliver)
+            self.output(direction, old, old_addr, old_deliver)
+            emit(event="impairment", action="reorder", direction=direction)
+            return
+        sender = self.mode if direction == "send" else ("client" if self.mode == "server" else "server")
+        packets = []
+        try:
+            buf = Buffer(data=data)
+            while not buf.eof():
+                start = buf.tell()
+                header = pull_quic_header(buf, host_cid_length=8)
+                end = start + header.packet_length
+                packets.append((header.packet_type, end))
+                buf.seek(end)
+        except ValueError:
+            pass
+        initial = sender == "client" and any(t == QuicPacketType.INITIAL for t, _ in packets)
+        handshake = sender == "server" and any(t == QuicPacketType.HANDSHAKE for t, _ in packets)
+        target = initial if self.scenario == "drop_initial" else handshake
+        if not self.applied and target and self.scenario != "baseline":
+            self.applied = True
+            action = self.scenario
+            if action == "reorder":
+                self.held = (direction, data, addr, deliver)
+                self.hold_timer = asyncio.get_running_loop().call_later(1.0, self.release)
+                return
+            emit(event="impairment", action=action, direction=direction,
+                 packet_types=[t.name for t, _ in packets])
+            if action in ("drop_initial", "drop_handshake"):
+                return
+            if action == "duplicate":
+                self.output(direction, data, addr, deliver)
+            if action == "corrupt":
+                end = next(end for t, end in packets if t == QuicPacketType.HANDSHAKE)
+                data = data[:end-1] + bytes([data[end-1] ^ 1]) + data[end:]
+        self.output(direction, data, addr, deliver)
+
+    def output(self, direction, data, addr, deliver):
+        self.packet("wire_send" if direction == "send" else "protocol_receive", data, addr)
+        deliver(data, addr)
+
+    def release(self):
+        if self.held:
+            direction, data, addr, deliver = self.held
+            self.held = None
+            emit(event="reorder_timeout", direction=direction)
+            self.output(direction, data, addr, deliver)
 
     def packet(self, direction, data, peer):
         if data and data[0] & 0xF0 == 0xF0:
@@ -41,8 +101,7 @@ class Transport:
         self.transport, self.capture = transport, capture
 
     def sendto(self, data, addr=None):
-        self.capture.packet("send", data, addr)
-        return self.transport.sendto(data, addr)
+        return self.capture.route("send", data, addr, self.transport.sendto)
 
     def __getattr__(self, name):
         return getattr(self.transport, name)
@@ -58,8 +117,9 @@ class Peer(QuicConnectionProtocol):
 
     def datagram_received(self, data, addr):
         if self.capture:
-            self.capture.packet("receive", data, addr)
-        super().datagram_received(data, addr)
+            self.capture.route("receive", data, addr, super().datagram_received)
+        else:
+            super().datagram_received(data, addr)
 
     def quic_event_received(self, event):
         if isinstance(event, HandshakeCompleted):
@@ -78,13 +138,12 @@ class Server(QuicServer):
         super().connection_made(Transport(transport, self.capture))
 
     def datagram_received(self, data, addr):
-        self.capture.packet("receive", data, addr)
-        super().datagram_received(data, addr)
+        self.capture.route("receive", data, addr, super().datagram_received)
 
 
 async def main(args):
     emit(event="version", aioquic=aioquic.__version__, python=sys.version.split()[0])
-    capture = Capture(args.capture)
+    capture = Capture(args.capture, args.mode, args.scenario)
     config = QuicConfiguration(is_client=args.mode == "client", alpn_protocols=[args.alpn])
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -121,6 +180,7 @@ if __name__ == "__main__":
     parser.add_argument("--hostname", default="example.test")
     parser.add_argument("--alpn", default="ex-quic-test")
     parser.add_argument("--retry", action="store_true")
+    parser.add_argument("--scenario", default="baseline", choices=["baseline", "drop_initial", "drop_handshake", "reorder", "duplicate", "corrupt"])
     parser.add_argument("--timeout", type=int, default=15)
     parser.add_argument("--capture", required=True)
     asyncio.run(main(parser.parse_args()))

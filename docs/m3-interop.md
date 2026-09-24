@@ -15,7 +15,7 @@ client Retry scenario also passes as recorded below.
 | aioquic client → ex_quic server | passed; TLS_AES_128_GCM_SHA256 (0x1301), peer Finished and QUIC confirmation; no client-certificate identity claimed |
 | ex_quic client → aioquic Retry server | passed; integrity tag, token echo, preserved ClientHello, increasing packet numbers and authenticated Retry CID |
 | aioquic client → ex_quic Retry server | passed; authenticated expiring address-bound token, both handshakes and QUIC confirmation |
-| Independent Initial/Handshake loss, reorder, duplicates, corruption | not run; local self-connection loss tests are separate evidence |
+| Independent Initial/Handshake loss, reorder, duplicates, corruption | passed in both roles for the deterministic single-fault cases below |
 | Independent wrong certificate / ALPN cases | not run; existing local negative tests are separate evidence |
 | Independent ChaCha negotiation | not run; packet AEAD and RFC 8439 block/header-mask unit tests pass |
 
@@ -134,3 +134,53 @@ certificate/ALPN negative scenarios are still pending; M3-E remains incomplete.
 Server Retry local gates: `mix format --check-formatted`,
 `mix compile --warnings-as-errors`, `mix test` (104 tests, seed 184043),
 and `git diff --check` passed. The independent server Retry command exited 0.
+
+## Deterministic independent impairment increment
+
+All ten combinations of `client|server` and
+`drop_initial|drop_handshake|reorder|duplicate|corrupt` passed (exit 0) on
+2026-09-24 with the same aioquic/Python/Elixir/OTP versions above. Source parent:
+`5a4856faf16e7086a58a64958f0e0f5004952f62`, with the harness changes applied.
+Reproduce each cell with:
+
+```sh
+INTEROP_SCENARIO=<scenario> mix run scripts/interop/run.exs <role> _build/interop/<role>-<scenario>
+```
+
+Each case requires both completed/confirmed handshakes and an actual matching
+`impairment` event. The fault is applied once at aioquic's UDP transport boundary:
+
+- `drop_initial`: discard the first client Initial datagram.
+- `drop_handshake`: discard the first server datagram containing Handshake.
+  aioquic can coalesce Initial and Handshake, so this also drops that Initial.
+- `reorder`: hold the first server Handshake-containing datagram, deliver the next
+  datagram in the same direction, then release the held one. The maximum hold is
+  one second. Timer-only release emits `reorder_timeout` and does not satisfy the
+  acceptance gate. In the ex_quic-client case the later datagram is a retransmission.
+- `duplicate`: deliver the first server Handshake-containing datagram twice.
+- `corrupt`: flip exactly one bit in the first Handshake packet's final tag byte;
+  preserve any other coalesced packets and require recovery to completion.
+
+Captures record original `send`/`receive` observations and post-impairment
+`wire_send`/`protocol_receive` deliveries. They remain transport-boundary JSONL,
+not kernel PCAP. Inbound discarded packets reached the OS but were not delivered
+to the independent QUIC parser. Outbound discarded packets did not reach the socket.
+Archived artifacts use `<role>-<scenario>-*`, with SHA256SUMS.
+
+The first client reorder attempt used a 100ms hold and exited 1 because no second
+packet arrived before release; handshake success alone did not pass the gate.
+The final one-second schedule produced actual order reversal and exited 0:
+`INTEROP_SCENARIO=reorder mix run scripts/interop/run.exs client _build/interop/client-reorder-second`.
+This is a corrected impairment schedule, not a retry policy masking QUIC failure.
+
+Harness qualification:
+`uv run --python 3.12 --with aioquic==1.2.0 python scripts/interop/test_peer.py`
+passed three tests using archived independent packet bytes. They verify actual
+loss/duplication/one-bit corruption, reversed delivery order and failure to report
+mere delay as successful reordering. These cases do not establish sustained-loss,
+all packet-direction combinations, congestion-load or production robustness.
+Independent certificate/ALPN negatives remain pending.
+
+Impairment increment local gates: formatting, warnings-as-errors compilation,
+104 ExUnit tests (seed 589848), and diff checks passed. All ten final network
+cells and all three harness qualification tests exited 0.

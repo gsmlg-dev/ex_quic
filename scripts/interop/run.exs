@@ -4,7 +4,8 @@ defmodule QUIC.Interop.Run do
 
   def run(mode, directory) do
     scenario = System.get_env("INTEROP_SCENARIO", "baseline")
-    unless scenario in ["baseline", "retry"], do: raise("unsupported scenario")
+    impairments = ["drop_initial", "drop_handshake", "reorder", "duplicate", "corrupt"]
+    unless scenario in (["baseline", "retry"] ++ impairments), do: raise("unsupported scenario")
     File.mkdir_p!(directory)
     fixture = Path.expand("deps/ex_ssl/test/fixtures/server_flight")
 
@@ -61,6 +62,8 @@ defmodule QUIC.Interop.Run do
 
     args = if scenario == "retry" and mode == "client", do: args ++ ["--retry"], else: args
 
+    args = if scenario in impairments, do: args ++ ["--scenario", scenario], else: args
+
     peer =
       Port.open(
         {:spawn_executable, System.find_executable("uv")},
@@ -75,10 +78,15 @@ defmodule QUIC.Interop.Run do
     result = await(peer, endpoint, mode, deadline, messages, false)
     observed_retry = Enum.any?(result.events, &match?(%{"event" => "retry"}, &1))
 
+    observed_impairment =
+      Enum.any?(result.events, &match?(%{"event" => "impairment", "action" => ^scenario}, &1))
+
     result =
       Map.merge(result, %{
         scenario: scenario,
-        passed: result.passed and (scenario != "retry" or observed_retry)
+        passed:
+          result.passed and (scenario != "retry" or observed_retry) and
+            (scenario not in impairments or observed_impairment)
       })
 
     File.write!(Path.join(directory, "result.json"), JSON.encode!(result))
