@@ -1,6 +1,6 @@
 # Abyss integration — opt-in QUIC endpoint
 
-Target inspected: `gsmlg-dev/abyss@1e326b7` (pushed to `gsmlg-dev/abyss/main`). The additive dispatcher seam and ex_quic adapter are implemented and covered by the cross-repository acceptance run below.
+Target inspected: `gsmlg-dev/abyss@37cda66` (pushed to `gsmlg-dev/abyss/main`). The additive dispatcher seam and ex_quic adapter are implemented and covered by the cross-repository acceptance run below.
 
 ## Actual starting behavior
 
@@ -12,7 +12,7 @@ Do not route every QUIC datagram through that handler lifecycle. QUIC requires d
 
 The Abyss patch adds a general `datagram_dispatcher` configuration option. Omitted means the exact existing UDP path. Opt-in mode invokes a persistent callback before handler creation, passing datagram bytes, remote address, local endpoint metadata, monotonic receipt time and endpoint generation.
 
-The listener still blocks in `recv(:infinity)`. A separate bounded writer owns egress admission and reports local send results while the listener remains blocked. Routes are monitored and removed when their connection process exits. See `gsmlg-dev/abyss@1e326b7` and `docs/dispatcher.md` in that repository.
+The listener still blocks in `recv(:infinity)`. A separate bounded writer owns egress admission and reports local send results while the listener remains blocked. Routes are monitored and removed when their connection process exits. See `gsmlg-dev/abyss@37cda66` and `docs/dispatcher.md` in that repository.
 
 `QUIC.AbyssDispatcher` is the dependency-free callback adapter in this repository. It starts an externally owned `QUIC.Endpoint`, forwards each datagram through its CID router, and uses the injected `send_fun` for egress. New connections are admitted only after minimal structural/version checks and a resource reservation. Established routes use destination CID; a provisional map covers Initial packets before the selected server CID becomes usable. Untrusted CID fields are routing hints, not authentication.
 
