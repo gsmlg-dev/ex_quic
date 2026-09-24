@@ -687,7 +687,9 @@ defmodule QUIC.Connection do
 
   defp expired?(data), do: not data.ready and data.adapter.monotonic_time() >= data.deadline
   defp reply(from, result), do: {:keep_state_and_data, [{:reply, from, result}]}
+
   defp stop(data, reason), do: {:stop, :normal, %{data | reason: reason}}
+
   defp stop_with_replies(data, reason, []), do: stop(data, reason)
 
   defp stop_with_replies(data, reason, replies),

@@ -64,6 +64,7 @@ defmodule QUIC.IO.ExternalWriter do
 
   defp normalize_result(:ok), do: {:ok, monotonic_time()}
   defp normalize_result({:ok, at}) when is_integer(at), do: {:ok, at}
+  defp normalize_result({:ok, _admission_ref}), do: {:ok, monotonic_time()}
   defp normalize_result({:error, _} = error), do: error
   defp normalize_result(other), do: {:error, {:invalid_send_result, other}}
 end

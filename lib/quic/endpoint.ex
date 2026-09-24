@@ -286,8 +286,11 @@ defmodule QUIC.Endpoint do
 
       {:ok, data, entry}
     else
-      true -> {:error, :cid_collision}
-      {:error, _} = error -> error
+      true ->
+        {:error, :cid_collision}
+
+      {:error, _} = error ->
+        error
     end
   end
 
