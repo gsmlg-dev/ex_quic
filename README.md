@@ -1,5 +1,12 @@
 # ex_quic — experimental QUIC v1 library
 
+[![GitHub Release](https://img.shields.io/github/v/release/gsmlg-dev/ex_quic)](https://github.com/gsmlg-dev/ex_quic/releases)
+[![Hex.pm](https://img.shields.io/hexpm/v/ex_quic.svg)](https://hex.pm/packages/ex_quic)
+[![CI](https://github.com/gsmlg-dev/ex_quic/actions/workflows/ci.yml/badge.svg)](https://github.com/gsmlg-dev/ex_quic/actions/workflows/ci.yml)
+[![Test](https://github.com/gsmlg-dev/ex_quic/actions/workflows/test.yml/badge.svg)](https://github.com/gsmlg-dev/ex_quic/actions/workflows/test.yml)
+[![Release](https://github.com/gsmlg-dev/ex_quic/actions/workflows/release.yml/badge.svg)](https://github.com/gsmlg-dev/ex_quic/actions/workflows/release.yml)
+[![E2E](https://github.com/gsmlg-dev/ex_quic/actions/workflows/e2e.yml/badge.svg)](https://github.com/gsmlg-dev/ex_quic/actions/workflows/e2e.yml)
+
 This repository contains an incremental Elixir QUIC implementation and its revision 3 design. Independent certificate handshakes, Retry, single-fault packet impairment and certificate/ALPN rejection pass in both roles against aioquic 1.2.0. Full protocol lifecycle and product acceptance remain incomplete. It uses `ex_ssl` v0.7.1 at `02eb981f59d4e182d4473e264a9f8b093ec6bf3d` on 2026-09-23.
 
 The project has three mandatory goals: JA3/JA4 observation of visible QUIC ClientHello data, measured profile-controlled client behavior, and opt-in integration with the Abyss UDP server. It is not a client-only plan.
