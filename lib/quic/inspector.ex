@@ -30,7 +30,9 @@ defmodule QUIC.Inspector do
 
     if Enum.all?(limits, fn {_key, value} ->
          is_nil(value) or (is_integer(value) and value > 0)
-       end), do: {:ok, %__MODULE__{limits: limits}}, else: {:error, :invalid_limits}
+       end),
+       do: {:ok, %__MODULE__{limits: limits}},
+       else: {:error, :invalid_limits}
   end
 
   @spec ingest(t(), Runtime.Datagram.t() | map()) :: {:ok, t(), [map()]} | {:error, term(), t()}
