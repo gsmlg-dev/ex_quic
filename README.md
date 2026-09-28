@@ -7,7 +7,7 @@
 [![Release](https://github.com/gsmlg-dev/ex_quic/actions/workflows/release.yml/badge.svg)](https://github.com/gsmlg-dev/ex_quic/actions/workflows/release.yml)
 [![E2E](https://github.com/gsmlg-dev/ex_quic/actions/workflows/e2e.yml/badge.svg)](https://github.com/gsmlg-dev/ex_quic/actions/workflows/e2e.yml)
 
-This repository contains an incremental Elixir QUIC implementation and its revision 3 design. Independent certificate handshakes, Retry, single-fault packet impairment and certificate/ALPN rejection pass in both roles against aioquic 1.2.0. Full protocol lifecycle and product acceptance remain incomplete. It uses `ex_ssl` v0.7.1 at `02eb981f59d4e182d4473e264a9f8b093ec6bf3d` on 2026-09-23.
+This repository contains an incremental Elixir QUIC implementation and its revision 3 design. Independent certificate handshakes, Retry, single-fault packet impairment and certificate/ALPN rejection pass in both roles against aioquic 1.2.0. Full protocol lifecycle and product acceptance remain incomplete. The Phase 1 reliable-stream implementation pins the G-S source of `ex_ssl` at `f1327e0bb7fb2093b8dc2b07e72b26233a739963`. See the [Phase 1 acceptance record](docs/phase1-acceptance.md) for current gates, exact evidence and limitations.
 
 The project has three mandatory goals: JA3/JA4 observation of visible QUIC ClientHello data, measured profile-controlled client behavior, and opt-in integration with the Abyss UDP server. It is not a client-only plan.
 
@@ -17,6 +17,7 @@ Use [CODEX-START.md](CODEX-START.md) in the actual ex_quic workspace. The first 
 
 | Document | Purpose |
 |---|---|
+| [Phase 1 plan](docs/phase1-implement-plan.md) / [Consumer API](docs/consumer-contract.md) / [I/O contract](docs/io-contract.md) | Reliable streams, public handles, admission outcomes and integration ownership |
 | [Implementation plan](docs/implement-plan.md) | Ordered M0–M6 tasks, dependencies and concrete exit gates |
 | [Architecture](docs/architecture.md) / [Detailed design](docs/design.md) | Functional core, runtime ownership, routing, sending and resource constraints |
 | [Actual TLS contract](docs/ex-ssl-quic-contract.md) | Existing public SSL.QUIC API, action order and limitations |

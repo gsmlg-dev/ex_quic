@@ -239,12 +239,14 @@ defmodule QUIC.ConnectionTest do
       )
 
     generation = Connection.status(conn).generation
+    monitor = Process.monitor(conn)
     assert :ok = Connection.close(conn)
     assert Connection.status(conn).phase == :closing
     assert :ok = Connection.deliver(conn, generation, <<0>>, GenUDP.monotonic_time())
     assert Connection.status(conn).phase == :closing
     assert_receive {:quic_closing, ^conn, ^generation, :closed}, 1_000
     assert_receive {:quic_closed, ^conn, ^generation, :closed}, 1_000
+    assert_receive {:DOWN, ^monitor, :process, ^conn, :normal}, 1_000
     refute Process.alive?(conn)
 
     :ok = GenUDP.close(writer)

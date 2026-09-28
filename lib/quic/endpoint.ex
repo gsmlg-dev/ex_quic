@@ -14,23 +14,36 @@ defmodule QUIC.Endpoint do
 
   @cid_length 8
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
-  def local(pid), do: GenServer.call(pid, :local)
-  def connections(pid), do: GenServer.call(pid, :connections)
-  def stats(pid), do: GenServer.call(pid, :stats)
+  def local(pid), do: safe_call(pid, :local, 5_000)
+  def connections(pid), do: safe_call(pid, :connections, 5_000)
+  def stats(pid), do: safe_call(pid, :stats, 5_000)
+
+  def accept(pid, timeout_or_opts \\ 5_000) do
+    opts = if is_list(timeout_or_opts), do: timeout_or_opts, else: [timeout: timeout_or_opts]
+    endpoint_call(pid, :accept, opts)
+  end
+
+  def connect(pid, remote, opts \\ []), do: endpoint_call(pid, {:connect, remote}, opts)
+  def operation_status(pid, ref), do: safe_call(pid, {:operation_status, ref}, 5_000)
 
   def receive_datagram(pid, remote, bytes, at),
-    do: GenServer.call(pid, {:datagram, remote, bytes, at})
+    do: safe_call(pid, {:datagram, remote, bytes, at}, 5_000)
 
   @impl true
   def init(opts) do
     role = Keyword.fetch!(opts, :role)
     max = Keyword.get(opts, :max_connections, 128)
+    event_limit = Keyword.get(opts, :event_limit, 128)
 
     retry = Keyword.get(opts, :retry, false)
     retry_limit = Keyword.get(opts, :retry_limit, 100)
     retry_ttl = Keyword.get(opts, :retry_ttl, 5_000_000)
 
+    operation_limit = Keyword.get(opts, :operation_limit, 256)
+
     if role in [:client, :server] and is_integer(max) and max > 0 and
+         is_integer(event_limit) and event_limit in 1..10_000 and
+         is_integer(operation_limit) and operation_limit in 1..10_000 and
          is_boolean(retry) and (not retry or role == :server) and
          is_integer(retry_limit) and retry_limit in 1..10_000 and
          is_integer(retry_ttl) and retry_ttl in 1..60_000_000 do
@@ -60,10 +73,16 @@ defmodule QUIC.Endpoint do
           retired_limit: max * 4,
           connections: %{},
           admission_drops: 0,
-          last_error: nil
+          last_error: nil,
+          accepts: [],
+          acceptor: Keyword.get(opts, :acceptor),
+          acceptor_monitor: if(is_pid(opts[:acceptor]), do: Process.monitor(opts[:acceptor])),
+          operations: %{},
+          operation_sequence: 0,
+          operation_limit: operation_limit
         }
 
-        if role == :server do
+        if role == :server or not Keyword.has_key?(opts, :remote) do
           {:ok, data}
         else
           case admit(
@@ -101,6 +120,75 @@ defmodule QUIC.Endpoint do
     {:reply, entries, data}
   end
 
+  def handle_call({:endpoint_operation, ref, deadline, request}, _from, data) do
+    signature = :crypto.hash(:sha256, :erlang.term_to_binary(request))
+
+    cond do
+      not is_reference(ref) or not is_integer(deadline) ->
+        {:reply, {:error, :invalid_operation}, data}
+
+      Map.has_key?(data.operations, ref) ->
+        previous = data.operations[ref]
+
+        result =
+          if previous.signature == signature,
+            do: previous.result,
+            else: {:error, :operation_ref_conflict}
+
+        {:reply, result, data}
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        result = {:error, :deadline_expired}
+        {:reply, result, record_operation(data, ref, signature, :rejected, result)}
+
+      request == :accept ->
+        case data.accepts do
+          [handle | rest] ->
+            result = {:ok, handle}
+            next = record_operation(%{data | accepts: rest}, ref, signature, :completed, result)
+            {:reply, result, next}
+
+          [] ->
+            result = {:error, :would_block}
+            {:reply, result, record_operation(data, ref, signature, :rejected, result)}
+        end
+
+      match?({:connect, _}, request) and data.role == :client ->
+        {:connect, remote} = request
+
+        case if(map_size(data.connections) < data.max,
+               do: admit(data, remote, :crypto.strong_rand_bytes(@cid_length), nil),
+               else: {:error, :connection_limit}
+             ) do
+          {:ok, next, entry} ->
+            result = {:ok, handle(entry)}
+            {:reply, result, record_operation(next, ref, signature, :admitted, result)}
+
+          {:error, reason} ->
+            result = {:error, reason}
+            {:reply, result, record_operation(data, ref, signature, :rejected, result)}
+        end
+
+      match?({:connect, _}, request) ->
+        result = {:error, :server_endpoint}
+        {:reply, result, record_operation(data, ref, signature, :rejected, result)}
+
+      true ->
+        result = {:error, :invalid_operation}
+        {:reply, result, record_operation(data, ref, signature, :rejected, result)}
+    end
+  end
+
+  def handle_call({:operation_status, ref}, _from, data) do
+    result =
+      case Map.get(data.operations, ref) do
+        nil -> :unknown
+        entry -> Map.take(entry, [:status, :result])
+      end
+
+    {:reply, result, data}
+  end
+
   def handle_call(:stats, _from, data),
     do:
       {:reply,
@@ -119,6 +207,21 @@ defmodule QUIC.Endpoint do
     case GenUDP.consumed(data.socket, generation, credit) do
       :ok -> {:noreply, next}
       {:error, reason} -> {:stop, {:socket_receive, reason}, next}
+    end
+  end
+
+  def handle_info({:quic_ready, pid, generation, _metadata}, data) do
+    case data.connections[pid] do
+      %{generation: ^generation} = entry when data.role == :server ->
+        accepted = handle(entry)
+
+        if is_pid(data.acceptor) and data.accepts == [],
+          do: send(data.acceptor, {:quic_accept, self()})
+
+        {:noreply, %{data | accepts: data.accepts ++ [accepted]}}
+
+      _ ->
+        {:noreply, data}
     end
   end
 
@@ -143,7 +246,7 @@ defmodule QUIC.Endpoint do
   end
 
   def handle_info({:DOWN, monitor, :process, pid, _reason}, data) do
-    if monitor == data.monitor do
+    if monitor in [data.monitor, data.acceptor_monitor] do
       {:stop, :normal, data}
     else
       case data.connections[pid] do
@@ -225,7 +328,7 @@ defmodule QUIC.Endpoint do
       {:ok, tag} = Protection.retry_tag(initial.dcid, body)
       data = %{data | retry_count: data.retry_count + 1}
 
-      case GenUDP.send(data.socket, body <> tag, remote) do
+      case data.io_module.send(data.io_writer, body <> tag, remote) do
         {:ok, _sent_at} -> %{data | retry_sent: data.retry_sent + 1}
         {:error, reason} -> %{data | last_error: {:retry_send, reason}}
       end
@@ -278,6 +381,10 @@ defmodule QUIC.Endpoint do
            owner: self(),
            io: {data.io_module, data.io_writer},
            remote: remote,
+           local: data.local,
+           public: Keyword.get(data.opts, :public, false),
+           event_limit: Keyword.get(data.opts, :event_limit, 128),
+           operation_limit: Keyword.get(data.opts, :operation_limit, 256),
            handshake_timeout: Keyword.get(data.opts, :handshake_timeout, 10_000),
            idle_timeout: Keyword.get(data.opts, :idle_timeout, 30_000),
            closing_timeout: Keyword.get(data.opts, :closing_timeout),
@@ -311,6 +418,13 @@ defmodule QUIC.Endpoint do
           },
           else: data
 
+      handle = handle(entry)
+
+      data =
+        if data.role == :server and not Keyword.get(data.opts, :public, false),
+          do: %{data | accepts: data.accepts ++ [handle]},
+          else: data
+
       {:ok, data, entry}
     else
       true ->
@@ -320,6 +434,9 @@ defmodule QUIC.Endpoint do
         error
     end
   end
+
+  defp handle(%{pid: pid, generation: generation}),
+    do: %QUIC.Runtime.ConnectionHandle{id: pid, generation: generation}
 
   defp generation(pid) do
     {:ok, Connection.status(pid).generation}
@@ -349,13 +466,15 @@ defmodule QUIC.Endpoint do
   end
 
   defp stream_transport_entries(opts) do
+    streams = QUIC.Streams.new(:server, opts)
+
     values = [
-      {0x04, Keyword.get(opts, :max_data, 1_048_576)},
-      {0x05, Keyword.get(opts, :max_stream_data, 65_536)},
-      {0x06, Keyword.get(opts, :max_stream_data, 65_536)},
-      {0x07, Keyword.get(opts, :max_stream_data, 65_536)},
-      {0x08, Keyword.get(opts, :max_streams_bidi, 16)},
-      {0x09, Keyword.get(opts, :max_streams_uni, 16)}
+      {0x04, streams.max_data},
+      {0x05, streams.max_stream_data_bidi_local},
+      {0x06, streams.max_stream_data_bidi_remote},
+      {0x07, streams.max_stream_data_uni},
+      {0x08, streams.max_streams_bidi},
+      {0x09, streams.max_streams_uni}
     ]
 
     Enum.reduce_while(values, {:ok, []}, fn {id, value}, {:ok, acc} ->
@@ -422,6 +541,7 @@ defmodule QUIC.Endpoint do
     %{
       data
       | connections: Map.delete(data.connections, pid),
+        accepts: Enum.reject(data.accepts, &(&1.id == pid)),
         routes: Map.reject(data.routes, fn {_, target} -> target == pid end),
         provisional: Map.reject(data.provisional, fn {_, target} -> target == pid end),
         retired: add_retired(data.retired, retired, data.retired_limit)
@@ -451,9 +571,54 @@ defmodule QUIC.Endpoint do
        do: {:ok, binary_part(rest, 0, length)}
 
   defp destination(<<first, cid::binary-size(@cid_length), _::binary>>)
-       when Bitwise.band(first, 0x80) == 0, do: {:ok, cid}
+       when Bitwise.band(first, 0x80) == 0,
+       do: {:ok, cid}
 
   defp destination(_), do: {:error, :malformed_header}
+
+  defp endpoint_call(pid, request, opts) do
+    ref = Keyword.get(opts, :ref, make_ref())
+    timeout = Keyword.get(opts, :timeout, 5_000)
+    deadline = System.monotonic_time(:millisecond) + Keyword.get(opts, :deadline, timeout)
+
+    try do
+      GenServer.call(pid, {:endpoint_operation, ref, deadline, request}, timeout)
+    catch
+      :exit, {:timeout, _} -> {:unknown, ref}
+      :exit, {:noproc, _} -> {:error, :closed}
+      :exit, {_reason, _call} -> {:unknown, ref}
+    end
+  end
+
+  defp safe_call(pid, request, timeout) do
+    try do
+      GenServer.call(pid, request, timeout)
+    catch
+      :exit, {:timeout, _} -> {:error, :timeout}
+      :exit, {:noproc, _} -> {:error, :closed}
+      :exit, {reason, _call} -> {:error, {:closed, reason}}
+    end
+  end
+
+  defp record_operation(data, ref, signature, status, result) do
+    operations =
+      Map.put(data.operations, ref, %{
+        signature: signature,
+        status: status,
+        result: result,
+        sequence: data.operation_sequence
+      })
+
+    operations =
+      if map_size(operations) > data.operation_limit do
+        {oldest, _} = Enum.min_by(operations, fn {_, entry} -> entry.sequence end)
+        Map.delete(operations, oldest)
+      else
+        operations
+      end
+
+    %{data | operations: operations, operation_sequence: data.operation_sequence + 1}
+  end
 
   @impl true
   def terminate(_, data) do

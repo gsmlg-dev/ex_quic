@@ -501,7 +501,7 @@ defmodule QUIC.Codec do
   def validate_frame_levels(frames, level)
       when is_list(frames) and level in [:initial, :handshake, :application] do
     Enum.reduce_while(frames, :ok, fn
-      %{type: :crypto}, :ok when level in [:initial, :handshake] ->
+      %{type: :crypto}, :ok when level in [:initial, :handshake, :application] ->
         {:cont, :ok}
 
       %{type: :crypto}, :ok ->

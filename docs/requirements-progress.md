@@ -2,9 +2,14 @@
 
 This record tracks incremental work against `docs/implement-plan.md`; intermediate runtime tests do not complete the M3 independent-peer gate.
 
+The 2026-09-28 Phase 1 increment and current consumer/I/O contract are recorded in
+[Phase 1 acceptance](phase1-acceptance.md), [consumer contract](consumer-contract.md),
+and [I/O contract](io-contract.md). The older milestone rows below are historical
+checkpoints, not the Phase 1 gate decision.
+
 | Area | Current evidence | Status |
 |---|---|---|
-| Mix app and pinned ex_ssl dependency | `mix.exs`, `mix.lock`, SHA `02eb981f59d4e182d4473e264a9f8b093ec6bf3d` | implemented |
+| Mix app and pinned ex_ssl dependency | `mix.exs`, `mix.lock`, G-S SHA `f1327e0bb7fb2093b8dc2b07e72b26233a739963` | implemented |
 | Runtime ownership contracts | `QUIC.Runtime`, `QUIC.Error` | implemented, pure data contracts only |
 | CI checks | `.github/workflows/ci.yml` | implemented |
 | TLS public contract checks | `test/ex_ssl_contract_test.exs`; real both-role UDP certificate tests in `test/quic/endpoint_test.exs` | local tests and independent aioquic both-role handshakes pass |

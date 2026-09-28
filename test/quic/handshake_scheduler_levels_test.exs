@@ -136,9 +136,9 @@ defmodule QUIC.HandshakeSchedulerLevelsTest do
     {:ok, state, []} = new()
 
     assert {:ok, state, 0} = HandshakeScheduler.open_stream(state, :bidi)
-    assert {:ok, state, 4} = HandshakeScheduler.open_stream(state, :uni)
+    assert {:ok, state, 2} = HandshakeScheduler.open_stream(state, :uni)
     assert state.streams.streams[0].local_initiated
-    assert not state.streams.streams[4].bidi
+    assert not state.streams.streams[2].bidi
   end
 
   test "independently decrypted outbound Handshake replays and retransmits without another TLS feed" do

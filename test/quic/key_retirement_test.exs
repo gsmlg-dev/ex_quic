@@ -268,6 +268,10 @@ defmodule QUIC.KeyRetirementTest do
     data = %{
       scheduler: retired,
       pending: [initial, handshake],
+      event_error: nil,
+      highwaters: %{},
+      operations: %{},
+      events: [],
       ready: false,
       budget: budget,
       remote: {{127, 0, 0, 1}, 443},

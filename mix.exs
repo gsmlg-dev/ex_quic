@@ -24,8 +24,7 @@ defmodule ExQuic.MixProject do
     [
       {:ex_ssl,
        git: "https://github.com/gsmlg-dev/ex_ssl.git",
-       ref: "02eb981f59d4e182d4473e264a9f8b093ec6bf3d",
-       runtime: false}
+       ref: "f1327e0bb7fb2093b8dc2b07e72b26233a739963"}
     ]
   end
 end

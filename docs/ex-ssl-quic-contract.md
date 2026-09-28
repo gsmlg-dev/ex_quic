@@ -1,6 +1,6 @@
-# ex_ssl integration contract — actual v0.7.1 API
+# ex_ssl integration contract — G-S source pin
 
-Reviewed source: `gsmlg-dev/ex_ssl@02eb981f59d4e182d4473e264a9f8b093ec6bf3d`. The upstream API is experimental but exists; this document replaces the earlier proposed TLS-export interface. The upstream source and interface document win if this summary drifts. [R1,R3]
+Reviewed and pinned G-S source: `gsmlg-dev/ex_ssl@f1327e0bb7fb2093b8dc2b07e72b26233a739963`. The prior review baseline was `02eb981f59d4e182d4473e264a9f8b093ec6bf3d`; the upstream Phase 1 acceptance record identifies the new immutable commit. The upstream API is experimental but exists; this document replaces the earlier proposed TLS-export interface. The upstream source and interface document win if this summary drifts. [R1,R3]
 
 ## Allowed dependencies
 

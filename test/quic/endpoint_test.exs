@@ -267,6 +267,38 @@ defmodule QUIC.EndpointTest do
     assert Connection.status(s.pid).packets.application.acked >= 1
   end
 
+  test "authenticated peer flow limits are installed in the live connection" do
+    {server_tls, client_tls} = certificate_options()
+
+    {:ok, server} =
+      Endpoint.start_link(
+        role: :server,
+        tls: server_tls,
+        streams: [max_data: 9, max_stream_data: 7, max_streams_bidi: 1, max_streams_uni: 0]
+      )
+
+    {:ok, client} =
+      Endpoint.start_link(role: :client, remote: Endpoint.local(server), tls: client_tls)
+
+    on_exit(fn -> Enum.each([client, server], &stop/1) end)
+
+    assert eventually(fn ->
+             case Endpoint.connections(client) do
+               [c] -> Connection.status(c.pid).phase == :established
+               _ -> false
+             end
+           end)
+
+    [c] = Endpoint.connections(client)
+    assert {:ok, 0} = Connection.open_stream(c.pid, :bidi)
+    assert {:blocked, _} = Connection.open_stream(c.pid, :bidi)
+    assert {:blocked, _} = Connection.open_stream(c.pid, :uni)
+    assert {:blocked, _} = Connection.send_stream(c.pid, 0, "12345678")
+    {:established, data} = :sys.get_state(c.pid)
+    assert data.scheduler.streams.peer_max_data == 9
+    assert data.scheduler.streams.streams[0].send_limit == 7
+  end
+
   test "real UDP handshakes recover a dropped Initial and a dropped Handshake packet" do
     {server_tls, client_tls} = certificate_options()
 

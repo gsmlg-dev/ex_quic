@@ -36,11 +36,13 @@ defmodule QUIC.Runtime do
   defmodule ConnectionHandle do
     @enforce_keys [:id, :generation]
     defstruct [:id, :generation]
+    @type t :: %__MODULE__{id: pid(), generation: reference()}
   end
 
   defmodule StreamHandle do
     @enforce_keys [:connection, :id]
     defstruct [:connection, :id]
+    @type t :: %__MODULE__{connection: QUIC.Runtime.ConnectionHandle.t(), id: non_neg_integer()}
   end
 
   defmodule VirtualClock do

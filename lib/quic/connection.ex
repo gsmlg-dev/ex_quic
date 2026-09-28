@@ -1,19 +1,19 @@
 defmodule QUIC.Connection do
   @moduledoc """
-  Temporary serialized handshake runtime using an externally owned IO capability.
+  Temporary serialized QUIC connection runtime using an externally owned IO capability.
 
   The endpoint owner calls `deliver/4` synchronously after routing a datagram.
   Only that owner may deliver; it must acquire receive credit before forwarding.
   A connection never closes the shared socket. The IO capability's `send/3`
   must return a local completion timestamp or a bounded failure.
 
-  This is an internal runtime seam, not a network-handshake readiness claim.
-  Independent interoperability and full protocol lifecycle coverage are still
-  required before exposing a complete endpoint API.
+  Public consumers use the generation handles and pull operations in `QUIC`.
+  See `docs/consumer-contract.md` for readiness, admission outcomes and limits.
   """
   @behaviour :gen_statem
   alias QUIC.{HandshakeScheduler, TLSDriver, TransportParameters, Recovery}
   alias QUIC.IO.Endpoint
+  alias QUIC.Runtime.{ConnectionHandle, StreamHandle}
 
   def start_link(opts) do
     :gen_statem.start_link(__MODULE__, Keyword.put_new(opts, :owner, self()), [])
@@ -36,7 +36,7 @@ defmodule QUIC.Connection do
     try do
       :gen_statem.call(pid, {:stream_send, stream_id, data, fin}, timeout)
     catch
-      :exit, {:timeout, _} -> {:error, :admission_timeout}
+      :exit, {:timeout, _} -> {:unknown, :legacy_send}
     end
   end
 
@@ -46,6 +46,74 @@ defmodule QUIC.Connection do
 
   def deliver(pid, generation, bytes, received_at),
     do: :gen_statem.call(pid, {:datagram, generation, bytes, received_at})
+
+  def attach(pid, generation, consumer, opts),
+    do: safe_call(pid, {:attach, generation, consumer, opts}, Keyword.get(opts, :timeout, 5_000))
+
+  def ready(pid, generation), do: safe_call(pid, {:ready, generation}, 5_000)
+  def info(pid, generation), do: safe_call(pid, {:info, generation}, 5_000)
+
+  def events(pid, generation, max, opts \\ []),
+    do: durable_call(pid, {:events, max}, generation, opts)
+
+  def read(pid, generation, id, max, opts \\ []),
+    do: durable_call(pid, {:read, id, max}, generation, opts)
+
+  def operation_status(pid, generation, ref),
+    do: safe_call(pid, {:operation_status, generation, ref}, 5_000)
+
+  def close_public(pid, generation, code \\ 0, reason \\ <<>>, opts \\ []),
+    do: operation_call(pid, generation, {:close, code, reason}, opts)
+
+  def open_public_stream(pid, generation, kind, opts \\ []),
+    do: operation_call(pid, generation, {:open, kind}, opts)
+
+  def send_public_stream(pid, generation, id, data, fin, opts),
+    do: operation_call(pid, generation, {:send, id, data, fin}, opts)
+
+  def reset_public_stream(pid, generation, id, code, opts \\ []),
+    do: operation_call(pid, generation, {:reset, id, code}, opts)
+
+  def stop_public_stream(pid, generation, id, code, opts \\ []),
+    do: operation_call(pid, generation, {:stop, id, code}, opts)
+
+  defp operation_call(pid, generation, request, opts) do
+    ref = Keyword.get(opts, :ref, make_ref())
+    timeout = Keyword.get(opts, :timeout, 5_000)
+    deadline = System.monotonic_time(:millisecond) + Keyword.get(opts, :deadline, timeout)
+
+    try do
+      :gen_statem.call(pid, {:operation, generation, ref, deadline, request}, timeout)
+    catch
+      :exit, {:timeout, _} -> {:unknown, ref}
+      :exit, {:noproc, _} -> {:error, :closed}
+      :exit, {_reason, _call} -> {:unknown, ref}
+    end
+  end
+
+  defp durable_call(pid, request, generation, opts) do
+    ref = Keyword.get(opts, :ref, make_ref())
+    timeout = Keyword.get(opts, :timeout, 5_000)
+    deadline = System.monotonic_time(:millisecond) + Keyword.get(opts, :deadline, timeout)
+
+    try do
+      :gen_statem.call(pid, {:public_pull, generation, ref, deadline, request}, timeout)
+    catch
+      :exit, {:timeout, _} -> {:unknown, ref}
+      :exit, {:noproc, _} -> {:error, :closed}
+      :exit, {_reason, _call} -> {:unknown, ref}
+    end
+  end
+
+  defp safe_call(pid, request, timeout) do
+    try do
+      :gen_statem.call(pid, request, timeout)
+    catch
+      :exit, {:timeout, _} -> {:error, :timeout}
+      :exit, {:noproc, _} -> {:error, :closed}
+      :exit, {reason, _call} -> {:error, {:closed, reason}}
+    end
+  end
 
   @impl true
   def callback_mode, do: :handle_event_function
@@ -60,8 +128,13 @@ defmodule QUIC.Connection do
     draining_timeout = Keyword.get(opts, :draining_timeout)
     owner = Keyword.fetch!(opts, :owner)
 
+    event_limit = Keyword.get(opts, :event_limit, 128)
+    operation_limit = Keyword.get(opts, :operation_limit, 256)
+
     if role in [:client, :server] and is_pid(writer) and is_pid(owner) and
          is_integer(timeout) and timeout > 0 and is_integer(idle_timeout) and idle_timeout > 0 and
+         is_integer(event_limit) and event_limit in 1..10_000 and
+         is_integer(operation_limit) and operation_limit in 1..10_000 and
          (is_nil(closing_timeout) or (is_integer(closing_timeout) and closing_timeout > 0)) and
          (is_nil(draining_timeout) or (is_integer(draining_timeout) and draining_timeout > 0)) do
       with {:ok, budget} <- Endpoint.new(Keyword.get(opts, :limits, [])) do
@@ -96,7 +169,20 @@ defmodule QUIC.Connection do
           draining_timeout: draining_timeout,
           closing_deadline: nil,
           draining_deadline: nil,
-          reason: :closed
+          reason: :closed,
+          local: Keyword.get(opts, :local),
+          public: Keyword.get(opts, :public, false),
+          ready_notified: false,
+          seen_streams: MapSet.new(),
+          event_error: nil,
+          consumer: nil,
+          consumer_monitor: nil,
+          events: [],
+          event_limit: event_limit,
+          operations: %{},
+          operation_sequence: 0,
+          operation_limit: operation_limit,
+          highwaters: %{}
         }
 
         {:ok, :handshaking, data,
@@ -156,6 +242,250 @@ defmodule QUIC.Connection do
     {:keep_state_and_data, [{:reply, from, status}]}
   end
 
+  def handle_event(
+        {:call, {caller, _} = from},
+        {:attach, generation, consumer, _opts},
+        _phase,
+        %{generation: generation} = data
+      )
+      when is_pid(consumer) do
+    if is_nil(data.consumer) or caller == data.consumer or caller == data.owner do
+      if data.consumer_monitor, do: Process.demonitor(data.consumer_monitor, [:flush])
+      next = %{data | consumer: consumer, consumer_monitor: Process.monitor(consumer)}
+      if data.ready, do: send(consumer, {:quic_ready, public_handle(data), metadata(data)})
+      {:keep_state, next, [{:reply, from, :ok}]}
+    else
+      reply(from, {:error, :not_consumer})
+    end
+  end
+
+  def handle_event(
+        {:call, from},
+        {:ready, generation},
+        _phase,
+        %{generation: generation, ready: ready} = _data
+      ),
+      do: {:keep_state_and_data, [{:reply, from, if(ready, do: :ready, else: :pending)}]}
+
+  def handle_event({:call, from}, {:info, generation}, _phase, %{generation: generation} = data) do
+    {:keep_state_and_data, [{:reply, from, {:ok, metadata(data)}}]}
+  end
+
+  def handle_event(
+        {:call, {caller, _} = from},
+        {:events, generation, max},
+        _phase,
+        %{generation: generation} = data
+      )
+      when is_integer(max) and max in 1..128 do
+    if caller == data.consumer do
+      {out, rest} = Enum.split(data.events, max)
+      {:keep_state, %{data | events: rest}, [{:reply, from, {:ok, out}}]}
+    else
+      reply(from, {:error, :not_consumer})
+    end
+  end
+
+  def handle_event(
+        {:call, {caller, _} = from},
+        {:read, generation, id, max},
+        :established,
+        %{generation: generation} = data
+      )
+      when is_integer(max) and max in 1..16_384 do
+    if caller == data.consumer do
+      with {:ok, scheduler, events} <- HandshakeScheduler.consume_stream(data.scheduler, id, max),
+           {:ok, scheduler, effects} <- HandshakeScheduler.schedule(scheduler) do
+        advance(%{data | scheduler: scheduler}, effects, [{:reply, from, {:ok, events}}])
+      else
+        {:error, reason} ->
+          reply(from, {:error, reason})
+
+        {:error, reason, scheduler} ->
+          stop_with_replies(%{data | scheduler: scheduler}, reason, [
+            {:reply, from, {:error, reason}}
+          ])
+      end
+    else
+      reply(from, {:error, :not_consumer})
+    end
+  end
+
+  def handle_event(
+        {:call, from},
+        {:operation_status, generation, ref},
+        _phase,
+        %{generation: generation} = data
+      ),
+      do:
+        {:keep_state_and_data,
+         [
+           {:reply, from,
+            case Map.get(data.operations, ref) do
+              nil -> :unknown
+              entry -> Map.take(entry, [:status, :result])
+            end}
+         ]}
+
+  def handle_event(
+        {:call, {caller, _} = from},
+        {:public_pull, generation, ref, deadline, request},
+        phase,
+        data
+      ) do
+    signature = :crypto.hash(:sha256, :erlang.term_to_binary({:pull, request}))
+
+    cond do
+      generation != data.generation ->
+        reply(from, {:error, :stale_handle})
+
+      not is_reference(ref) or not is_integer(deadline) ->
+        reply(from, {:error, :invalid_operation})
+
+      Map.has_key?(data.operations, ref) ->
+        previous = data.operations[ref]
+
+        reply(
+          from,
+          if(previous.signature == signature,
+            do: previous.result,
+            else: {:error, :operation_ref_conflict}
+          )
+        )
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        result = {:error, :deadline_expired}
+
+        {:keep_state, record_operation(data, ref, signature, :rejected, result),
+         [{:reply, from, result}]}
+
+      caller != data.consumer ->
+        result = {:error, :not_consumer}
+
+        {:keep_state, record_operation(data, ref, signature, :rejected, result),
+         [{:reply, from, result}]}
+
+      match?({:events, _}, request) ->
+        {:events, max} = request
+
+        if is_integer(max) and max in 1..128 do
+          {out, rest} = Enum.split(data.events, max)
+          result = {:ok, out}
+          next = record_operation(%{data | events: rest}, ref, signature, :completed, result)
+          {:keep_state, next, [{:reply, from, result}]}
+        else
+          result = {:error, :invalid_operation}
+
+          {:keep_state, record_operation(data, ref, signature, :rejected, result),
+           [{:reply, from, result}]}
+        end
+
+      match?({:read, _, _}, request) and phase == :established ->
+        {:read, id, max} = request
+
+        if is_integer(id) and id >= 0 and is_integer(max) and max in 1..16_384 do
+          case HandshakeScheduler.consume_stream(data.scheduler, id, max) do
+            {:ok, scheduler, events} ->
+              with {:ok, scheduler, effects} <- HandshakeScheduler.schedule(scheduler) do
+                result = {:ok, events}
+
+                next =
+                  record_operation(
+                    %{data | scheduler: scheduler},
+                    ref,
+                    signature,
+                    :completed,
+                    result
+                  )
+
+                advance(next, effects, [{:reply, from, result}])
+              else
+                {:error, reason} ->
+                  result = {:error, reason}
+
+                  {:keep_state, record_operation(data, ref, signature, :rejected, result),
+                   [{:reply, from, result}]}
+
+                {:error, reason, scheduler} ->
+                  result = {:ok, events}
+
+                  next =
+                    record_operation(
+                      %{data | scheduler: scheduler},
+                      ref,
+                      signature,
+                      :completed,
+                      result
+                    )
+
+                  stop_with_replies(next, reason, [{:reply, from, result}])
+              end
+
+            {:error, reason} ->
+              result = {:error, reason}
+
+              {:keep_state, record_operation(data, ref, signature, :rejected, result),
+               [{:reply, from, result}]}
+          end
+        else
+          result = {:error, :invalid_operation}
+
+          {:keep_state, record_operation(data, ref, signature, :rejected, result),
+           [{:reply, from, result}]}
+        end
+
+      true ->
+        result = {:error, :invalid_operation}
+
+        {:keep_state, record_operation(data, ref, signature, :rejected, result),
+         [{:reply, from, result}]}
+    end
+  end
+
+  def handle_event({:call, from}, {:operation, generation, ref, deadline, request}, phase, data) do
+    signature = :crypto.hash(:sha256, :erlang.term_to_binary(request))
+
+    cond do
+      generation != data.generation ->
+        reply(from, {:error, :stale_handle})
+
+      not is_reference(ref) or not is_integer(deadline) ->
+        reply(from, {:error, :invalid_operation})
+
+      Map.has_key?(data.operations, ref) ->
+        previous = data.operations[ref]
+
+        reply(
+          from,
+          if(previous.signature == signature,
+            do: previous.result,
+            else: {:error, :operation_ref_conflict}
+          )
+        )
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        result = {:error, :deadline_expired}
+
+        {:keep_state, record_operation(data, ref, signature, :rejected, result),
+         [{:reply, from, result}]}
+
+      phase in [:closing, :draining] and elem(request, 0) == :close ->
+        result = :ok
+
+        {:keep_state, record_operation(data, ref, signature, :admitted, result),
+         [{:reply, from, result}]}
+
+      phase != :established and elem(request, 0) != :close ->
+        result = {:error, :not_established}
+
+        {:keep_state, record_operation(data, ref, signature, :rejected, result),
+         [{:reply, from, result}]}
+
+      true ->
+        execute_operation(data, from, ref, signature, request)
+    end
+  end
+
   def handle_event({:call, from}, :close, phase, _data) when phase in [:closing, :draining],
     do: {:keep_state_and_data, [{:reply, from, :ok}]}
 
@@ -181,6 +511,11 @@ defmodule QUIC.Connection do
 
       {:error, reason} ->
         reply(from, {:error, reason})
+
+      {:error, reason, scheduler} ->
+        stop_with_replies(%{data | scheduler: scheduler}, reason, [
+          {:reply, from, {:error, reason}}
+        ])
     end
   end
 
@@ -208,7 +543,15 @@ defmodule QUIC.Connection do
       when is_integer(stream_id) and is_integer(max_bytes) and max_bytes > 0 do
     case HandshakeScheduler.consume_stream(data.scheduler, stream_id, max_bytes) do
       {:ok, scheduler, events} ->
-        advance(%{data | scheduler: scheduler}, [], [{:reply, from, {:ok, events}}])
+        case HandshakeScheduler.schedule(scheduler) do
+          {:ok, scheduler, effects} ->
+            advance(%{data | scheduler: scheduler}, effects, [{:reply, from, {:ok, events}}])
+
+          {:error, reason, scheduler} ->
+            stop_with_replies(%{data | scheduler: scheduler}, reason, [
+              {:reply, from, {:error, reason}}
+            ])
+        end
 
       {:error, reason} ->
         reply(from, {:error, reason})
@@ -326,7 +669,30 @@ defmodule QUIC.Connection do
     cond do
       ref == data.writer_monitor -> stop(data, {:writer_down, reason})
       ref == data.owner_monitor -> stop(data, :owner_down)
+      ref == data.consumer_monitor -> stop(data, :consumer_down)
       true -> :keep_state_and_data
+    end
+  end
+
+  def handle_event({:call, from}, request, _phase, data) when is_tuple(request) do
+    if tuple_size(request) >= 2 and
+         elem(request, 0) in [
+           :attach,
+           :ready,
+           :info,
+           :events,
+           :read,
+           :operation_status,
+           :public_open,
+           :public_send,
+           :public_reset,
+           :public_stop,
+           :public_close
+         ] do
+      reason = if elem(request, 1) != data.generation, do: :stale_handle, else: :invalid_operation
+      reply(from, {:error, reason})
+    else
+      reply(from, {:error, :invalid_operation})
     end
   end
 
@@ -351,7 +717,7 @@ defmodule QUIC.Connection do
             else: data.pending
 
         data = refresh_idle(%{data | scheduler: scheduler, budget: budget, pending: pending})
-        notify_stream_events(data.owner, events)
+        data = collect_stream_events(data, events)
         effects = Enum.flat_map(events, &Map.get(&1, :generated, []))
 
         if Enum.any?(events, &(&1.type in [:connection_close, :application_close])) do
@@ -427,6 +793,10 @@ defmodule QUIC.Connection do
                original_destination_connection_id:
                  if(peer_role == :server, do: scheduler.original_dcid)
              ) do
+        scheduler = HandshakeScheduler.install_peer_parameters(scheduler, parameters.values)
+        timeout = effective_idle_timeout(data.idle_timeout, scheduler.peer_idle_timeout)
+        data = %{data | scheduler: scheduler, idle_timeout: timeout}
+
         if data.role == :server do
           case HandshakeScheduler.handshake_done(HandshakeScheduler.confirm_handshake(scheduler)) do
             {:ok, scheduler, effects} ->
@@ -455,6 +825,9 @@ defmodule QUIC.Connection do
       Enum.reject(data.pending ++ effects, &HandshakeScheduler.retired?(data.scheduler, &1.level))
 
     cond do
+      data.event_error != nil ->
+        stop_with_replies(data, data.event_error, replies)
+
       length(pending) > data.budget.max_queue ->
         stop_with_replies(data, :send_queue_limit, replies)
 
@@ -462,8 +835,10 @@ defmodule QUIC.Connection do
         stop_with_replies(data, :send_queue_bytes_limit, replies)
 
       true ->
-        case flush(%{data | pending: pending}) do
+        case flush(observe(%{data | pending: pending})) do
           {:ok, %{ready: true} = data} ->
+            data = notify_ready(data)
+
             established_data = %{
               data
               | idle_deadline:
@@ -509,7 +884,9 @@ defmodule QUIC.Connection do
             {:error, reason, data}
 
           {:ok, budget, send} ->
+            data = observe(%{data | budget: budget})
             {:ok, budget, ^send} = Endpoint.dequeue(budget)
+            data = observe(%{data | budget: budget})
             {result, at} = local_send(data, effect.bytes)
             {:ok, budget, _receipt} = Endpoint.local_send(budget, send, result, at)
 
@@ -521,7 +898,7 @@ defmodule QUIC.Connection do
                    at
                  ) do
               {:ok, scheduler, _statuses} ->
-                next = %{data | scheduler: scheduler, budget: budget, pending: rest}
+                next = observe(%{data | scheduler: scheduler, budget: budget, pending: rest})
 
                 case result do
                   :ok -> flush(next)
@@ -566,6 +943,10 @@ defmodule QUIC.Connection do
     delay = max(0, div(data.draining_deadline - data.adapter.monotonic_time() + 999, 1000))
     [{{:timeout, :draining}, delay, data.generation}]
   end
+
+  defp effective_idle_timeout(local, 0), do: local
+  defp effective_idle_timeout(0, peer), do: peer
+  defp effective_idle_timeout(local, peer), do: min(local, peer)
 
   defp refresh_idle(data) do
     timeout = Map.get(data, :idle_timeout, 30_000)
@@ -623,9 +1004,15 @@ defmodule QUIC.Connection do
     else
       frame =
         if level == :application do
-          %{type: :application_close, error_code: 0, reason: Atom.to_string(reason)}
+          case reason do
+            {:application, code, opaque} ->
+              %{type: :application_close, error_code: code, reason: opaque}
+
+            _ ->
+              %{type: :application_close, error_code: 0, reason: <<>>}
+          end
         else
-          %{type: :connection_close, error_code: 0, frame_type: 0, reason: Atom.to_string(reason)}
+          %{type: :connection_close, error_code: 0, frame_type: 0, reason: <<>>}
         end
 
       scheduler = %{
@@ -690,17 +1077,226 @@ defmodule QUIC.Connection do
     :exit, _ -> {{:error, :writer_unavailable}, data.adapter.monotonic_time()}
   end
 
-  defp notify_stream_events(owner, events) do
-    Enum.each(events, fn
-      %{type: :stream, frame: frame, events: stream_events} ->
-        send(owner, {:quic_stream, self(), frame.stream_id, stream_events})
+  defp public_handle(data), do: %ConnectionHandle{id: self(), generation: data.generation}
 
-      %{type: :reset_stream, frame: frame, events: stream_events} ->
-        send(owner, {:quic_stream_reset, self(), frame.stream_id, stream_events})
+  defp metadata(data) do
+    resources = resources(data)
+
+    %{
+      local: data.local,
+      remote: data.remote,
+      alpn: TLSDriver.info(data.scheduler.tls)[:alpn],
+      tls_complete: data.scheduler.tls.facts.tls_complete,
+      parameters_valid: data.parameters_valid,
+      peer_authenticated: data.scheduler.tls.facts.peer_authenticated,
+      quic_confirmed: data.scheduler.tls.facts.quic_confirmed,
+      resources: resources,
+      highwaters:
+        Map.merge(resources, data.highwaters, fn _key, current, peak -> max(current, peak) end)
+    }
+  end
+
+  defp resources(data) do
+    streams = data.scheduler.streams
+
+    %{
+      pending_datagrams: length(data.pending),
+      io_queue_entries: :queue.len(data.budget.queue),
+      io_queue_bytes: data.budget.queue_bytes,
+      in_flight_sends: map_size(data.budget.in_flight),
+      application_crypto_bytes: data.scheduler.tls.levels.application.recv.next,
+      operation_result_bytes:
+        Enum.reduce(data.operations, 0, fn {_, operation}, bytes ->
+          bytes + :erlang.external_size(operation.result)
+        end),
+      queued_bytes: data.scheduler.queued_bytes,
+      ready_bytes: streams.ready_bytes,
+      receive_buffered_bytes:
+        Enum.reduce(streams.streams, 0, fn {_, s}, acc -> acc + s.recv_buffered end),
+      recovery_packets:
+        Enum.reduce(data.scheduler.recovery.spaces, 0, fn {_, s}, acc ->
+          acc + map_size(s.sent)
+        end),
+      stream_records: map_size(streams.streams),
+      event_count: length(data.events),
+      operations: map_size(data.operations),
+      tracked_references:
+        map_size(data.operations) + map_size(data.budget.in_flight) + map_size(data.budget.timers) +
+          Enum.count(
+            [
+              data.generation,
+              Map.get(data, :owner_monitor),
+              Map.get(data, :writer_monitor),
+              Map.get(data, :consumer_monitor)
+            ],
+            &is_reference/1
+          ),
+      mailbox_messages: Process.info(self(), :message_queue_len) |> elem(1)
+    }
+  end
+
+  defp observe(data) do
+    highwaters =
+      Enum.reduce(resources(data), data.highwaters, fn {name, value}, highwaters ->
+        Map.update(highwaters, name, value, &max(&1, value))
+      end)
+
+    %{data | highwaters: highwaters}
+  end
+
+  defp notify_ready(%{ready_notified: true} = data), do: data
+
+  defp notify_ready(data) do
+    meta = metadata(data)
+
+    if data.public do
+      send(data.owner, {:quic_ready, self(), data.generation, meta})
+      if is_pid(data.consumer), do: send(data.consumer, {:quic_ready, public_handle(data), meta})
+    end
+
+    observe(%{data | ready_notified: true, events: [{:ready, meta} | data.events]})
+  end
+
+  defp collect_stream_events(%{public: false} = data, events) do
+    Enum.each(events, fn
+      %{type: :stream, frame: frame, events: items} ->
+        send(data.owner, {:quic_stream, self(), frame.stream_id, items})
+
+      %{type: :reset_stream, frame: frame, events: items} ->
+        send(data.owner, {:quic_stream_reset, self(), frame.stream_id, items})
 
       _ ->
         :ok
     end)
+
+    data
+  end
+
+  defp collect_stream_events(data, events) do
+    Enum.reduce(events, data, fn
+      %{type: type, frame: frame}, data when type in [:stream, :reset_stream] ->
+        id = frame.stream_id
+        handle = %StreamHandle{connection: public_handle(data), id: id}
+
+        data =
+          if MapSet.member?(data.seen_streams, id),
+            do: data,
+            else:
+              queue_event(
+                %{data | seen_streams: MapSet.put(data.seen_streams, id)},
+                {:stream_open, handle, if(Bitwise.band(id, 2) == 0, do: :bidi, else: :uni)}
+              )
+
+        if Map.get(data.scheduler.streams.ready, id, []) == [],
+          do: data,
+          else: queue_event(data, {:readable, handle})
+
+      %{type: :stop_sending, stream_id: id, error_code: code}, data ->
+        queue_event(
+          data,
+          {:stopped, %StreamHandle{connection: public_handle(data), id: id}, code}
+        )
+
+      %{type: type}, data
+      when type in [:ack, :max_data, :max_stream_data, :max_streams_bidi, :max_streams_uni] ->
+        queue_event(data, :writable)
+
+      _, data ->
+        data
+    end)
+  end
+
+  defp queue_event(data, event) do
+    cond do
+      event in data.events -> data
+      length(data.events) >= data.event_limit - 1 -> %{data | event_error: :consumer_event_limit}
+      true -> observe(%{data | events: data.events ++ [event]})
+    end
+  end
+
+  defp record_operation(data, ref, signature, status, result) do
+    entry = %{
+      signature: signature,
+      status: status,
+      result: result,
+      sequence: data.operation_sequence
+    }
+
+    operations = Map.put(data.operations, ref, entry)
+
+    operations =
+      if map_size(operations) > data.operation_limit do
+        {oldest, _} = Enum.min_by(operations, fn {_, entry} -> entry.sequence end)
+        Map.delete(operations, oldest)
+      else
+        operations
+      end
+
+    observe(%{data | operations: operations, operation_sequence: data.operation_sequence + 1})
+  end
+
+  defp execute_operation(data, from, ref, signature, {:open, kind}) do
+    case HandshakeScheduler.open_stream(data.scheduler, kind) do
+      {:ok, scheduler, id} ->
+        result = {:ok, %StreamHandle{connection: public_handle(data), id: id}}
+        next = record_operation(%{data | scheduler: scheduler}, ref, signature, :admitted, result)
+        {:keep_state, next, [{:reply, from, result}]}
+
+      result ->
+        {:keep_state, record_operation(data, ref, signature, :rejected, result),
+         [{:reply, from, result}]}
+    end
+  end
+
+  defp execute_operation(data, from, ref, signature, {:close, code, reason})
+       when is_integer(code) and code >= 0 and code < 4_611_686_018_427_387_904 and
+              is_binary(reason) and byte_size(reason) <= 256 do
+    case begin_closing(data, {:application, code, reason}) do
+      {:ok, next, actions} ->
+        next = record_operation(next, ref, signature, :admitted, :ok)
+        {:next_state, :closing, next, [{:reply, from, :ok} | actions]}
+
+      {:error, reason, next} ->
+        stop_with_replies(next, reason, [{:reply, from, {:error, reason}}])
+    end
+  end
+
+  defp execute_operation(data, from, ref, signature, request) do
+    outcome =
+      case request do
+        {:send, id, bytes, fin}
+        when is_integer(id) and id >= 0 and is_binary(bytes) and is_boolean(fin) ->
+          HandshakeScheduler.send_stream(data.scheduler, id, bytes, fin)
+
+        {:reset, id, code}
+        when is_integer(id) and id >= 0 and is_integer(code) and code >= 0 and
+               code < 4_611_686_018_427_387_904 ->
+          HandshakeScheduler.reset_stream(data.scheduler, id, code)
+
+        {:stop, id, code}
+        when is_integer(id) and id >= 0 and is_integer(code) and code >= 0 and
+               code < 4_611_686_018_427_387_904 ->
+          HandshakeScheduler.stop_stream(data.scheduler, id, code)
+
+        _ ->
+          {:error, :invalid_operation}
+      end
+
+    case outcome do
+      {:ok, scheduler, effects} ->
+        result = {:ok, ref}
+        next = record_operation(%{data | scheduler: scheduler}, ref, signature, :admitted, result)
+        advance(next, effects, [{:reply, from, result}])
+
+      {:error, reason, scheduler} ->
+        stop_with_replies(%{data | scheduler: scheduler}, reason, [
+          {:reply, from, {:error, reason}}
+        ])
+
+      result ->
+        {:keep_state, record_operation(data, ref, signature, :rejected, result),
+         [{:reply, from, result}]}
+    end
   end
 
   defp initial_packet?(<<first, _::binary>>), do: Bitwise.band(first, 0xF0) == 0xC0
@@ -720,6 +1316,10 @@ defmodule QUIC.Connection do
   def terminate(_reason, _phase, data) do
     if data.scheduler, do: TLSDriver.abort(data.scheduler.tls, data.reason)
     send(data.owner, {:quic_closed, self(), data.generation, data.reason})
+
+    if is_pid(data.consumer),
+      do: send(data.consumer, {:quic_closed, public_handle(data), data.reason})
+
     :ok
   end
 end

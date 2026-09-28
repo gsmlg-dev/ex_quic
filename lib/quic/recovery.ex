@@ -117,6 +117,41 @@ defmodule QUIC.Recovery do
 
   def reserve(_, _, _, _), do: {:error, :invalid_reservation}
 
+  @doc false
+  def supersede(state, space, number) when space in @spaces and is_integer(number) do
+    with {:ok, %Packet{status: :lost, metadata: metadata} = packet} <-
+           fetch_packet(state, space, number),
+         true <- Map.has_key?(metadata, :crypto) or Map.has_key?(metadata, :control) do
+      {:ok, put_packet(state, space, %{packet | status: :superseded}, state.spaces[space])}
+    else
+      _ -> {:error, :invalid_supersession}
+    end
+  end
+
+  @doc false
+  def abort_reservations_since(state, before) do
+    {spaces, released} =
+      Enum.reduce(@spaces, {%{}, 0}, fn space, {spaces, released} ->
+        cutoff = before.spaces[space].next
+        current = state.spaces[space]
+
+        {sent, bytes} =
+          Enum.map_reduce(current.sent, 0, fn {number, packet}, bytes ->
+            if number >= cutoff and packet.status in [:reserved, :queued] do
+              {{number,
+                %{packet | status: :failed, metadata: terminal_metadata(packet.metadata)}},
+               bytes + packet.bytes}
+            else
+              {{number, packet}, bytes}
+            end
+          end)
+
+        {Map.put(spaces, space, %{current | sent: Map.new(sent)}), released + bytes}
+      end)
+
+    arm(%{state | spaces: spaces, congestion: NewReno.release(state.congestion, released)})
+  end
+
   @spec transition(t(), atom(), non_neg_integer(), atom()) :: {:ok, t()} | {:error, atom()}
   def transition(state, space, number, status) when status in [:queued, :sent],
     do: update_status(state, space, number, status)
@@ -154,7 +189,14 @@ defmodule QUIC.Recovery do
           do: {:acked, MapSet.delete(s.pending_acks, number)},
           else: {:sent, s.pending_acks}
 
-      packet = %{packet | status: status, acked_at: if(status == :acked, do: at, else: nil)}
+      packet = %{
+        packet
+        | status: status,
+          acked_at: if(status == :acked, do: at, else: nil),
+          metadata:
+            if(status == :acked, do: terminal_metadata(packet.metadata), else: packet.metadata)
+      }
+
       state = put_packet(state, space, packet, %{s | pending_acks: pending})
 
       state =
@@ -164,8 +206,18 @@ defmodule QUIC.Recovery do
 
       {:ok, arm(state), [status]}
     else
-      false -> {:error, :invalid_packet_state}
-      error -> error
+      false ->
+        case fetch_packet(state, space, number) do
+          {:ok, %Packet{status: status}}
+          when status in [:sent, :acked, :lost, :superseded, :failed, :discarded] ->
+            {:ok, state, []}
+
+          _ ->
+            {:error, :invalid_packet_state}
+        end
+
+      error ->
+        error
     end
   end
 
@@ -357,7 +409,7 @@ defmodule QUIC.Recovery do
     else
       retained =
         Enum.reject(space.sent, fn {_number, packet} ->
-          packet.status in [:acked, :failed, :discarded]
+          packet.status in [:acked, :failed, :discarded, :superseded]
         end)
 
       %{space | sent: Map.new(retained)}
@@ -431,8 +483,12 @@ defmodule QUIC.Recovery do
       Enum.reduce(lo..hi, {s, nums, bytes}, fn n, {s2, nums2, bytes2} ->
         case s2.sent[n] do
           %Packet{status: :sent} = p ->
-            p = %{p | status: :acked, acked_at: at}
+            p = %{p | status: :acked, acked_at: at, metadata: terminal_metadata(p.metadata)}
             {%{s2 | sent: Map.put(s2.sent, n, p)}, [n | nums2], bytes2 + p.bytes}
+
+          %Packet{status: status} = p when status in [:lost, :superseded] ->
+            p = %{p | status: :acked, acked_at: at, metadata: terminal_metadata(p.metadata)}
+            {%{s2 | sent: Map.put(s2.sent, n, p)}, [n | nums2], bytes2}
 
           %Packet{status: status} when status in [:reserved, :queued] ->
             {%{s2 | pending_acks: MapSet.put(s2.pending_acks, n)}, nums2, bytes2}
@@ -443,6 +499,8 @@ defmodule QUIC.Recovery do
       end)
     end)
   end
+
+  defp terminal_metadata(metadata), do: Map.drop(metadata, [:bytes, :control])
 
   defp merge_ranges(existing, incoming) do
     (existing ++ incoming)
@@ -458,26 +516,36 @@ defmodule QUIC.Recovery do
   end
 
   defp update_rtt(state, space, ack, acked, at) do
-    sample =
+    {latest, sample} =
       case Enum.find(acked, fn n -> state.spaces[space].sent[n].sent_at end) do
         nil ->
-          nil
+          {nil, nil}
 
         n ->
-          max(
-            1,
-            at - state.spaces[space].sent[n].sent_at -
-              min(ack[:delay] || 0, state.rtt.max_ack_delay)
-          )
+          latest = max(1, at - state.spaces[space].sent[n].sent_at)
+          min_rtt = if state.rtt.min, do: min(state.rtt.min, latest), else: latest
+
+          delay =
+            if space == :application do
+              min(
+                max(0, ack[:delay] || 0) * Integer.pow(2, state.rtt.ack_delay_exponent),
+                state.rtt.max_ack_delay
+              )
+            else
+              0
+            end
+
+          sample = if latest >= min_rtt + delay, do: latest - delay, else: latest
+          {latest, sample}
       end
 
     if sample == nil,
       do: {state, nil},
-      else: {%{state | rtt: update_rtt_sample(state.rtt, sample)}, sample}
+      else: {%{state | rtt: update_rtt_sample(state.rtt, latest, sample)}, latest}
   end
 
-  defp update_rtt_sample(rtt, sample) do
-    min = if rtt.min, do: min(rtt.min, sample), else: sample
+  defp update_rtt_sample(rtt, latest, sample) do
+    min = if rtt.min, do: min(rtt.min, latest), else: latest
 
     {smoothed, variance} =
       if rtt.smoothed,
@@ -486,7 +554,7 @@ defmodule QUIC.Recovery do
            div(3 * rtt.variance + abs(rtt.smoothed - sample), 4)},
         else: {sample, div(sample, 2)}
 
-    %{rtt | latest: sample, min: min, smoothed: smoothed, variance: variance, pto_count: 0}
+    %{rtt | latest: latest, min: min, smoothed: smoothed, variance: variance, pto_count: 0}
   end
 
   defp detect_loss(state, now) do

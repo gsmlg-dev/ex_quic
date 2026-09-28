@@ -30,7 +30,8 @@ defmodule QUIC.Congestion.NewReno do
 
   @spec available?(t(), non_neg_integer()) :: boolean()
   def available?(%__MODULE__{cwnd: cwnd, bytes_in_flight: flight}, bytes)
-      when is_integer(bytes) and bytes >= 0, do: flight + bytes <= cwnd
+      when is_integer(bytes) and bytes >= 0,
+      do: flight + bytes <= cwnd
 
   @spec reserve(t(), non_neg_integer()) :: {:ok, t()} | {:error, :congestion_limited}
   def reserve(state, bytes) when is_integer(bytes) and bytes >= 0 do
@@ -46,6 +47,8 @@ defmodule QUIC.Congestion.NewReno do
     do: %{state | bytes_in_flight: max(0, state.bytes_in_flight - bytes)}
 
   @spec on_ack(t(), non_neg_integer()) :: t()
+  def on_ack(state, 0), do: state
+
   def on_ack(state, bytes) when is_integer(bytes) and bytes >= 0 do
     flight = max(0, state.bytes_in_flight - bytes)
 
