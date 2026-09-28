@@ -732,7 +732,7 @@ defmodule QUIC.Streams do
 
   defp take_events([{:data, id, data} | rest], limit, acc, bytes) when bytes < limit do
     size = min(byte_size(data), limit - bytes)
-    <<taken::binary-size(size), remaining::binary>> = data
+    <<taken::binary-size(^size), remaining::binary>> = data
     next_rest = if remaining == <<>>, do: rest, else: [{:data, id, remaining} | rest]
     take_events(next_rest, limit, [{:data, id, taken} | acc], bytes + size)
   end

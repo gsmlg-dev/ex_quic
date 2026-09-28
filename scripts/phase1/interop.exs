@@ -162,7 +162,7 @@ defmodule QUIC.Phase1.Interop do
           {acc, error, started}
         else
           n = min(@chunk, byte_size(bytes))
-          <<part::binary-size(n), rest::binary>> = bytes
+          <<part::binary-size(^n), rest::binary>> = bytes
 
           fin =
             final and rest == <<>> and
