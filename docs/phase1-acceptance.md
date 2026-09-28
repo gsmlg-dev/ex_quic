@@ -186,3 +186,43 @@ exposed. Pruned old loss records accept late ACKs as no-ops while retained logic
 payload continues safely. Migration, resumption/0-RTT, QUIC DATAGRAM, HTTP/3,
 QPACK and WebTransport are unsupported. The experimental subset and these
 finite-lifetime policies must remain explicit in downstream products.
+
+## Cumulative ACK correction — issue #2 (2026-09-28)
+
+The v0.2.0 recovery implementation rejected valid cumulative ACK ranges wider
+than 4,096 packet numbers. This imposed a connection-lifetime limit even when
+all earlier packet records had already been acknowledged and pruned.
+
+Recovery now checks range membership only for retained packet records. Work is
+bounded by `max_sent_packets` and `max_ack_ranges`, independent of numeric range
+width. The obsolete `max_ack_span` field/option is removed. Never-issued packet
+numbers still fail before ACK processing; retained pending receipts, late ACKs
+for lost packets, descending RTT sample selection and congestion accounting keep
+their existing behavior.
+
+Validation used Elixir 1.18.5 / OTP 28.5.0.5 (ERTS 16.4.0.5), the unchanged
+`ex_ssl` pin above, and seed `28092026` in `.trees/issue-2`:
+
+- Baseline: `mix deps.get` and `mix test test/quic/recovery_test.exs --seed 28092026`
+  exited 0; 16 tests passed.
+- Before the fix: recovery regressions exited 2 (20 tests, 3 failures), and the
+  scheduler regression exited 2 (5 tests, 1 failure), all on the expected
+  `:invalid_ack_ranges` rejection.
+- After the fix: both focused files passed together (25 tests, exit 0).
+  Coverage includes the default 4,098-packet history boundary, a 4,100-packet
+  STREAM sequence with a four-record bound, a sparse range reaching `2^62 - 1`,
+  delayed local receipts, late loss acknowledgments and invalid/range-count bounds.
+- `MIX_ENV=test mix compile --warnings-as-errors`, both repository/script format
+  checks, `mix test --seed 28092026` (211 tests, 0 failures), `git diff --check`,
+  and `git diff --exit-code -- mix.lock` all exited 0.
+
+The downstream http_fetch/Abyss joint workload remains a separate retest after
+updating its immutable ex_quic revision. These deterministic regressions do not
+claim that downstream G-P1 has passed or establish unrestricted lifetime readiness.
+
+Independent pinned `aioquic==1.2.0` Phase 1 impaired-stream checks also passed
+(exit 0) for client, server and external-server arrangements:
+`PHASE1_INTEROP_RUN=1 PHASE1_SCENARIO=impaired mix run scripts/phase1/interop.exs <role>`
+with `PHASE1_EXTERNAL=1` for the external server. Each reported payload integrity,
+cleanup and zero remaining CID routes. These are the existing ex_quic fixtures,
+not the downstream joint reproduction.

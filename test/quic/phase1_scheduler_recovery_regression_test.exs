@@ -159,6 +159,63 @@ defmodule QUIC.Phase1SchedulerRecoveryRegressionTest do
     assert loss_state.recovery.spaces.application.next > packet_number
   end
 
+  test "a long-lived stream accepts a cumulative ACK after terminal history is pruned" do
+    {:ok, state, []} =
+      HandshakeScheduler.new(:client,
+        adapter: ApplicationTLS,
+        dcid: <<1, 2, 3, 4>>,
+        scid: <<5, 6, 7, 8>>,
+        recovery: Recovery.new(max_sent_packets: 4, initial_cwnd: 1_000_000)
+      )
+
+    {:ok, state, 0} = HandshakeScheduler.open_stream(state, :bidi)
+
+    {state, last_packet} =
+      Enum.reduce(1..4100, {state, nil}, fn index, {state, _last_packet} ->
+        {:ok, state, [packet]} = HandshakeScheduler.send_stream(state, 0, <<index::16>>, false)
+
+        {:ok, state, [:sent]} =
+          HandshakeScheduler.local_send(
+            state,
+            :application,
+            packet.packet_number,
+            :ok,
+            index * 10
+          )
+
+        {:ok, state, %{acked: [packet_number]}} =
+          HandshakeScheduler.receive_ack(
+            state,
+            :application,
+            %{
+              largest: packet.packet_number,
+              ranges: [{packet.packet_number, packet.packet_number}]
+            },
+            index * 10 + 1
+          )
+
+        assert packet_number == packet.packet_number
+        {state, packet.packet_number}
+      end)
+
+    assert last_packet == 4099
+    assert state.streams.streams[0].send_offset == 8_200
+    assert state.recovery.congestion.bytes_in_flight == 0
+    assert map_size(state.recovery.spaces.application.sent) <= 4
+    refute Map.has_key?(state.recovery.spaces.application.sent, 0)
+
+    assert {:ok, state, %{acked: [], lost: [], rtt_sample: nil}} =
+             HandshakeScheduler.receive_ack(
+               state,
+               :application,
+               %{largest: last_packet, ranges: [{0, last_packet}]},
+               50_000
+             )
+
+    assert state.recovery.congestion.bytes_in_flight == 0
+    assert state.streams.streams[0].send_offset == 8_200
+  end
+
   defp stream_loss_state do
     {:ok, state, []} =
       HandshakeScheduler.new(:client,

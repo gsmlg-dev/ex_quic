@@ -214,6 +214,122 @@ defmodule QUIC.RecoveryTest do
     refute Map.has_key?(state.spaces.application.sent, first)
   end
 
+  test "valid cumulative ACKs survive the default history boundary" do
+    state =
+      Enum.reduce(0..4097, Recovery.new(), fn n, state ->
+        {state, ^n} = sent(state, :application, 10, n * 1000)
+
+        {:ok, state, %{acked: [^n]}} =
+          Recovery.receive_ack(
+            state,
+            :application,
+            %{largest: n, ranges: [{n, n}], delay: 0},
+            n * 1000 + 1
+          )
+
+        state
+      end)
+
+    refute Map.has_key?(state.spaces.application.sent, 0)
+    assert map_size(state.spaces.application.sent) <= state.max_sent_packets
+
+    assert {:ok, duplicate, %{acked: [], lost: [], rtt_sample: nil}} =
+             Recovery.receive_ack(
+               state,
+               :application,
+               %{largest: 4097, ranges: [{0, 4097}], delay: 0},
+               5_000_000
+             )
+
+    assert duplicate.spaces == state.spaces
+    assert duplicate.congestion == state.congestion
+    assert duplicate.rtt == state.rtt
+
+    {state, 4098} = sent(duplicate, :application, 10, 5_000_001)
+
+    assert {:ok, state, %{acked: [4098], lost: [], rtt_sample: 1}} =
+             Recovery.receive_ack(
+               state,
+               :application,
+               %{largest: 4098, ranges: [{0, 4098}], delay: 0},
+               5_000_002
+             )
+
+    assert state.congestion.bytes_in_flight == 0
+
+    assert {:error, :ack_never_issued} =
+             Recovery.receive_ack(
+               state,
+               :application,
+               %{largest: 4099, ranges: [{0, 4099}]},
+               5_000_003
+             )
+  end
+
+  @tag timeout: 1000
+  test "huge sparse ACK ranges process only retained packets and preserve RTT order" do
+    largest = Integer.pow(2, 62) - 1
+    # Model a long-lived space whose earlier terminal history has been pruned.
+    state = put_in(Recovery.new().spaces.application.next, largest - 2)
+    {state, first} = sent(state, :application, 10, 100)
+    {state, middle} = sent(state, :application, 20, 101)
+    {state, last} = sent(state, :application, 30, 102)
+    ack = %{largest: largest, ranges: [{last, last}, {0, first}], delay: 0}
+
+    assert {:ok, state, %{acked: [^last, ^first], lost: [], rtt_sample: 8}} =
+             Recovery.receive_ack(state, :application, ack, 110)
+
+    assert state.spaces.application.sent[middle].status == :sent
+    assert state.congestion.bytes_in_flight == 20
+    assert map_size(state.spaces.application.sent) == 3
+
+    assert {:ok, duplicate, %{acked: [], lost: [], rtt_sample: nil}} =
+             Recovery.receive_ack(state, :application, ack, 111)
+
+    assert duplicate.congestion == state.congestion
+  end
+
+  test "wide ACK defers pending receipts and accounts late lost packets only once" do
+    state = put_in(Recovery.new(max_sent_packets: 4).spaces.application.next, 5000)
+    {state, lost} = sent(state, :application, 10, 0)
+    {state, other} = sent(state, :application, 20, 1)
+    {:ok, state, pending} = Recovery.reserve(state, :application, %{}, 30)
+    {:ok, state} = Recovery.transition(state, :application, pending.number, :queued)
+    {state, last} = sent(state, :application, 40, 3)
+
+    {:ok, state, %{lost: [{:application, ^lost}]}} =
+      Recovery.receive_ack(state, :application, %{largest: last, ranges: [{last, last}]}, 4)
+
+    assert {:ok, state, %{acked: [^other, ^lost]}} =
+             Recovery.receive_ack(state, :application, %{largest: last, ranges: [{0, last}]}, 5)
+
+    assert state.congestion.bytes_in_flight == 30
+    assert state.spaces.application.pending_acks == MapSet.new([pending.number])
+
+    assert {:ok, state, [:acked]} =
+             Recovery.local_send(state, :application, pending.number, :ok, 6)
+
+    assert state.congestion.bytes_in_flight == 0
+    assert state.spaces.application.pending_acks == MapSet.new()
+  end
+
+  test "range count and malformed range validation remain bounded" do
+    {state, _} = sent(Recovery.new(max_ack_ranges: 1), :application, 10, 0)
+
+    for ranges <- [[{-1, 0}], [{1, 0}], [{0, :invalid}]] do
+      assert {:error, :invalid_ack_ranges} =
+               Recovery.receive_ack(state, :application, %{largest: 0, ranges: ranges}, 1)
+    end
+
+    assert {:error, :ack_range_limit} =
+             Recovery.receive_ack(
+               state,
+               :application,
+               %{largest: 0, ranges: [{0, 0}, {0, 0}]},
+               1
+             )
+  end
+
   test "does not reclaim active or lost packets when history is full" do
     state = Recovery.new(max_sent_packets: 1)
     {state, _number} = sent(state, :application, 10, 0)
