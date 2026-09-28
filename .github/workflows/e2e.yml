@@ -20,14 +20,10 @@ jobs:
     name: End-to-End Tests
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout released source
         uses: actions/checkout@v4
-
-      - name: Fetch release artifacts
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release download "v${{ inputs.version }}" --pattern "ex_quic-*.tar" || echo "Release artifact not downloaded, continuing with source checkout"
+        with:
+          ref: v${{ inputs.version }}
 
       - name: Setup BEAM
         uses: erlef/setup-beam@v1
@@ -64,3 +60,12 @@ jobs:
           mix run scripts/interop/run.exs server _build/interop/server
           mix run scripts/interop/stream_interop.exs
           uv run --python 3.12 --with aioquic==1.2.0 python scripts/interop/test_peer.py
+
+      - name: Verify Phase 1 reliable streams
+        env:
+          PHASE1_INTEROP_RUN: "1"
+          PHASE1_SCENARIO: impaired
+        run: |
+          mix run scripts/phase1/interop.exs client
+          mix run scripts/phase1/interop.exs server
+          PHASE1_EXTERNAL=1 mix run scripts/phase1/interop.exs server

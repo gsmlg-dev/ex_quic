@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (e.g. 1.2.3)"
+        description: "Release version (e.g. 0.2.0)"
         required: true
         type: string
       git_ref:
-        description: "Git ref to release from"
+        description: "Branch to release from"
         required: true
         default: "main"
         type: string
@@ -18,18 +18,31 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_BRANCH: ${{ inputs.git_ref }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.git_ref }}
           fetch-depth: 0
+
+      - name: Validate release
+        run: |
+          [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git check-ref-format --branch "$RELEASE_BRANCH"
+          test "$(git branch --show-current)" = "$RELEASE_BRANCH"
+          if git rev-parse --verify --quiet "refs/tags/v$RELEASE_VERSION"; then
+            echo "Release tag already exists" >&2
+            exit 1
+          fi
 
       - name: Setup BEAM
         uses: erlef/setup-beam@v1
@@ -39,7 +52,7 @@ jobs:
 
       - name: Update version
         run: |
-          sed -i.bak -E 's/version: "[^"]+"/version: "${{ inputs.version }}"/' mix.exs
+          sed -i.bak -E "s/version: \"[^\"]+\"/version: \"$RELEASE_VERSION\"/" mix.exs
           rm -f mix.exs.bak
 
       - name: Install dependencies
@@ -48,46 +61,36 @@ jobs:
           mix local.rebar --force
           mix deps.get
 
-      - name: Build package
-        run: mix hex.build || true
-
-      - name: Publish to Hex
-        if: env.HEX_API_KEY != ''
+      - name: Verify release source
         env:
-          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
-        run: mix hex.publish --yes || true
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ex_quic-${{ inputs.version }}.tar
-          path: ex_quic-*.tar
-          if-no-files-found: ignore
+          MIX_ENV: test
+        run: |
+          mix format --check-formatted
+          mix format --check-formatted scripts/phase1/interop.exs scripts/phase1/release_check.exs
+          mix compile --warnings-as-errors
+          mix test --seed 28092026
+          git diff --check
+          git diff --exit-code -- mix.lock
 
       - name: Commit version bump
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git commit -am "chore(release): v${{ inputs.version }}"
+          git add mix.exs
+          git commit -m "chore(release): v$RELEASE_VERSION"
 
-      - name: Create git tag
-        run: git tag "v${{ inputs.version }}"
-
-      - name: Push commit and tag
+      - name: Create and push version tag
         run: |
-          git push origin ${{ inputs.git_ref }}
-          git push origin "v${{ inputs.version }}"
+          git tag "v$RELEASE_VERSION"
+          git push --atomic origin "HEAD:refs/heads/$RELEASE_BRANCH" "refs/tags/v$RELEASE_VERSION"
 
-      - name: Create GitHub Release
+      # Hex packages cannot preserve the required Git-pinned ex_ssl dependency.
+      - name: Create GitHub source release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if ls ex_quic-*.tar 1> /dev/null 2>&1; then
-            gh release create "v${{ inputs.version }}" ex_quic-*.tar \
-              --title "v${{ inputs.version }}" \
-              --generate-notes
-          else
-            gh release create "v${{ inputs.version }}" \
-              --title "v${{ inputs.version }}" \
-              --generate-notes
-          fi
+          gh release create "v$RELEASE_VERSION" \
+            --verify-tag \
+            --title "v$RELEASE_VERSION" \
+            --notes "GitHub source release. The required ex_ssl dependency remains pinned to its accepted Git SHA; this release is not published to Hex." \
+            --generate-notes
