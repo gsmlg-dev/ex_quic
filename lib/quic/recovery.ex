@@ -17,7 +17,6 @@ defmodule QUIC.Recovery do
             congestion: nil,
             max_sent_packets: 4096,
             max_ack_ranges: 256,
-            max_ack_span: 4096,
             timer_generation: 0,
             deadline: nil
 
@@ -63,8 +62,7 @@ defmodule QUIC.Recovery do
       rtt: rtt,
       congestion: NewReno.new(opts),
       max_sent_packets: Keyword.get(opts, :max_sent_packets, 4096),
-      max_ack_ranges: Keyword.get(opts, :max_ack_ranges, 256),
-      max_ack_span: Keyword.get(opts, :max_ack_span, 4096)
+      max_ack_ranges: Keyword.get(opts, :max_ack_ranges, 256)
     }
   end
 
@@ -244,7 +242,7 @@ defmodule QUIC.Recovery do
   def receive_ack(state, space, ack, at)
       when space in @spaces and is_map(ack) and is_integer(at) do
     with {:ok, ranges} <-
-           normalize_ranges(ack[:ranges] || [], state.max_ack_ranges, state.max_ack_span),
+           normalize_ranges(ack[:ranges] || [], state.max_ack_ranges),
          {:ok, largest} <- validate_largest(ack[:largest], ranges),
          :ok <- known_ack?(state.spaces[space], largest, ranges) do
       {space_state, acked, newly_acked_bytes} = acknowledge(state.spaces[space], ranges, at)
@@ -444,11 +442,11 @@ defmodule QUIC.Recovery do
 
   defp validate_largest(_, _), do: {:error, :invalid_ack}
 
-  defp normalize_ranges(ranges, max, max_span) when is_list(ranges) and length(ranges) <= max do
+  defp normalize_ranges(ranges, max) when is_list(ranges) and length(ranges) <= max do
     result =
       Enum.reduce_while(ranges, {:ok, []}, fn range, {:ok, acc} ->
         case range_bounds(range) do
-          {:ok, {lo, hi}} when lo <= hi and hi - lo <= max_span ->
+          {:ok, {lo, hi}} when lo <= hi ->
             {:cont, {:ok, [{lo, hi} | acc]}}
 
           _ ->
@@ -462,7 +460,7 @@ defmodule QUIC.Recovery do
     end
   end
 
-  defp normalize_ranges(_, _, _), do: {:error, :ack_range_limit}
+  defp normalize_ranges(_, _), do: {:error, :ack_range_limit}
 
   defp range_bounds({lo, hi}) when is_integer(lo) and is_integer(hi) and lo >= 0 and hi >= 0,
     do: {:ok, {lo, hi}}
@@ -479,25 +477,33 @@ defmodule QUIC.Recovery do
   end
 
   defp acknowledge(space, ranges, at) do
-    Enum.reduce(ranges, {space, [], 0}, fn {lo, hi}, {s, nums, bytes} ->
-      Enum.reduce(lo..hi, {s, nums, bytes}, fn n, {s2, nums2, bytes2} ->
-        case s2.sent[n] do
-          %Packet{status: :sent} = p ->
-            p = %{p | status: :acked, acked_at: at, metadata: terminal_metadata(p.metadata)}
-            {%{s2 | sent: Map.put(s2.sent, n, p)}, [n | nums2], bytes2 + p.bytes}
+    # Range widths grow with connection lifetime; work is bounded by retained
+    # packet records and the validated range count, never by the numeric span.
+    {space, acked, bytes} =
+      Enum.reduce(space.sent, {space, [], 0}, fn {n, packet}, {s, nums, bytes} = acc ->
+        if Enum.any?(ranges, fn {lo, hi} -> n >= lo and n <= hi end) do
+          case packet do
+            %Packet{status: :sent} = p ->
+              p = %{p | status: :acked, acked_at: at, metadata: terminal_metadata(p.metadata)}
+              {%{s | sent: Map.put(s.sent, n, p)}, [n | nums], bytes + p.bytes}
 
-          %Packet{status: status} = p when status in [:lost, :superseded] ->
-            p = %{p | status: :acked, acked_at: at, metadata: terminal_metadata(p.metadata)}
-            {%{s2 | sent: Map.put(s2.sent, n, p)}, [n | nums2], bytes2}
+            %Packet{status: status} = p when status in [:lost, :superseded] ->
+              p = %{p | status: :acked, acked_at: at, metadata: terminal_metadata(p.metadata)}
+              {%{s | sent: Map.put(s.sent, n, p)}, [n | nums], bytes}
 
-          %Packet{status: status} when status in [:reserved, :queued] ->
-            {%{s2 | pending_acks: MapSet.put(s2.pending_acks, n)}, nums2, bytes2}
+            %Packet{status: status} when status in [:reserved, :queued] ->
+              {%{s | pending_acks: MapSet.put(s.pending_acks, n)}, nums, bytes}
 
-          _ ->
-            {s2, nums2, bytes2}
+            _ ->
+              acc
+          end
+        else
+          acc
         end
       end)
-    end)
+
+    # Map traversal has no packet-number order; RTT selection expects largest first.
+    {space, Enum.sort(acked, :desc), bytes}
   end
 
   defp terminal_metadata(metadata), do: Map.drop(metadata, [:bytes, :control])
