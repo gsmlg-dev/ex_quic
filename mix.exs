@@ -4,7 +4,7 @@ defmodule Quic.MixProject do
   def project do
     [
       app: :elixir_quic,
-      version: "0.2.2",
+      version: "0.3.0",
       description:
         "Experimental QUIC v1 transport, Initial fingerprint observation and client profiles",
       package: package(),
