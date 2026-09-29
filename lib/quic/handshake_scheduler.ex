@@ -33,6 +33,8 @@ defmodule Quic.HandshakeScheduler do
             effects: [],
             max_packet_size: @default_max_packet,
             peer_idle_timeout: 0,
+            local_max_datagram_frame_size: 0,
+            peer_max_datagram_frame_size: 0,
             min_initial_size: 1200,
             max_queue: 64,
             queued: 0,
@@ -79,6 +81,7 @@ defmodule Quic.HandshakeScheduler do
         min_initial_size: Keyword.get(opts, :min_initial_size, 1200),
         max_queue: Keyword.get(opts, :max_queue, 64),
         max_queue_bytes: Keyword.get(opts, :max_queue_bytes, 1_048_576),
+        local_max_datagram_frame_size: Keyword.get(opts, :max_datagram_frame_size, 0),
         streams: Streams.new(role, Keyword.get(opts, :streams, []))
       }
 
@@ -169,6 +172,48 @@ defmodule Quic.HandshakeScheduler do
     end
   end
 
+  @doc "Admit one unreliable application DATAGRAM frame; loss never requeues it."
+  def send_datagram(%__MODULE__{} = state, data) when is_binary(data) do
+    frame = %{type: :datagram, data: data}
+
+    with true <- state.peer_max_datagram_frame_size > 0,
+         true <- byte_size(data) + 2 <= effective_datagram_frame_size(state),
+         {:ok, wire} <- Codec.encode_frames([frame]),
+         true <- byte_size(wire) <= effective_datagram_frame_size(state) do
+      controls = Map.get(state.pending_control, :application, [])
+
+      cond do
+        length(controls) >= state.max_queue ->
+          {:blocked, :send_queue_limit}
+
+        state.queued_bytes + byte_size(data) > state.max_queue_bytes ->
+          {:blocked, :send_queue_bytes_limit}
+
+        not Map.has_key?(state.keys, :application) ->
+          {:error, :application_unavailable}
+
+        true ->
+          next = %{state | queued_bytes: state.queued_bytes + byte_size(data)}
+          pending = Map.put(next.pending_control, :application, controls ++ [frame])
+          schedule(%{next | pending_control: pending})
+      end
+    else
+      false when state.peer_max_datagram_frame_size == 0 -> {:error, :datagram_unsupported}
+      false -> {:error, :datagram_too_large}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def send_datagram(_, _), do: {:error, :invalid_datagram}
+
+  @doc "Effective frame ceiling after peer negotiation and worst-case packet overhead."
+  def effective_datagram_frame_size(state) do
+    # Packet numbers and an authenticated replacement CID can grow while queued.
+    packet_overhead = 1 + 20 + 4 + 16
+
+    max(0, min(state.peer_max_datagram_frame_size, state.max_packet_size - packet_overhead))
+  end
+
   @doc "Install the semantic values of authenticated, validated peer parameters."
   def install_peer_parameters(state, values) do
     rtt = %{
@@ -180,6 +225,7 @@ defmodule Quic.HandshakeScheduler do
     %{
       state
       | streams: Streams.install_peer_parameters(state.streams, values),
+        peer_max_datagram_frame_size: Map.get(values, :max_datagram_frame_size, 0),
         max_packet_size:
           min(state.max_packet_size, Map.get(values, :max_udp_payload_size, 65_527)),
         recovery: %{state.recovery | rtt: rtt},
@@ -639,7 +685,9 @@ defmodule Quic.HandshakeScheduler do
 
       %Recovery.Packet{status: status, metadata: %{control: [_ | _] = frames}}
       when status in [:sent, :lost, :failed] ->
-        next = queue_control(state, space, frames)
+        reliable = Enum.reject(frames, &(&1.type == :datagram))
+        probe = if reliable == [], do: [%{type: :ping}], else: []
+        next = queue_control(state, space, reliable ++ probe)
 
         with {:ok, recovery} <- handoff_lost_packet(next.recovery, space, number) do
           schedule(%{next | recovery: recovery})
@@ -915,7 +963,7 @@ defmodule Quic.HandshakeScheduler do
     end
   end
 
-  # Each application packet carries at most one reliable control/STREAM range.
+  # Each application packet carries at most one control/STREAM/DATAGRAM frame.
   # Size probes include ACKs, CID, packet number, varints, padding and AEAD tag.
   defp fit_controls(state, %{level: :application, bytes: <<>>} = emission) do
     case Map.get(state.pending_control, :application, []) do
@@ -960,6 +1008,21 @@ defmodule Quic.HandshakeScheduler do
                }, [tail | rest]}
             end
 
+          {:ok, _} when frame.type == :datagram ->
+            case Map.get(state.pending_acks, :application, []) do
+              [] ->
+                {:error, :packet_size_limit}
+
+              [_ | _] ->
+                # Send the ACK separately; an admitted DATAGRAM cannot be split.
+                ack_only = %{
+                  candidate
+                  | pending_control: Map.delete(candidate.pending_control, :application)
+                }
+
+                {:ok, ack_only, [frame | rest]}
+            end
+
           {:ok, _} ->
             {:error, :packet_size_limit}
 
@@ -989,8 +1052,11 @@ defmodule Quic.HandshakeScheduler do
 
   defp control_data_bytes(frames) do
     Enum.reduce(frames, 0, fn
-      %{type: :stream, data: data}, total when is_binary(data) -> total + byte_size(data)
-      _, total -> total
+      %{type: type, data: data}, total when type in [:stream, :datagram] and is_binary(data) ->
+        total + byte_size(data)
+
+      _, total ->
+        total
     end)
   end
 
@@ -1307,6 +1373,8 @@ defmodule Quic.HandshakeScheduler do
       :max_packet_size,
       :min_initial_size,
       :max_queue,
+      :max_queue_bytes,
+      :max_datagram_frame_size,
       :streams,
       :initial_read_keys
     ])
@@ -1406,6 +1474,17 @@ defmodule Quic.HandshakeScheduler do
 
       %{type: :stream} ->
         {:error, {:wrong_encryption_level, :stream, level}}
+
+      %{type: :datagram, wire_size: _} = frame when level == :application ->
+        if state.local_max_datagram_frame_size > 0 and
+             frame.wire_size <= state.local_max_datagram_frame_size do
+          dispatch_frames(state, level, space, number, rest, at, [frame | events])
+        else
+          {:error, {:protocol_violation, 0x0A, frame.wire_type}}
+        end
+
+      %{type: :datagram} ->
+        {:error, {:wrong_encryption_level, :datagram, level}}
 
       %{type: :reset_stream} = frame when level == :application ->
         case Streams.receive_reset(

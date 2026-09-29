@@ -110,3 +110,10 @@ Use the actual upstream ex_ssl fixture pin for exact regression expectations. JA
 A GitHub repository metadata request for `gsmlg-dev/ex_quic` returned 404. This only describes access at review time; it is not evidence that a local/private workspace cannot exist. Inspect the real Codex workspace first.
 
 This document package supersedes the earlier supplied ex_quic v1/v2 planning packages. It creates no GitHub repository and contains no protocol implementation, certificates, private keys, traffic secrets or claimed new test results.
+
+## S8 — unreliable QUIC DATAGRAM extension
+
+[RFC 9221](https://www.rfc-editor.org/rfc/rfc9221.html), sections 3–5,
+read 2026-09-29 for issue #5. Covers transport parameter 0x20, frame types
+0x30/0x31, encoded-frame size limits, one-way negotiation, ACK elicitation,
+non-retransmission, congestion control and receiver resource drops.

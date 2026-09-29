@@ -39,15 +39,15 @@ defmodule Quic.TransportParametersTest do
   test "preserves ordered unknown parameters and exposes known values" do
     ordered = [
       %{id: 0x00, value: <<1, 2>>},
-      %{id: 0x20, value: <<0xAA, 0xBB>>},
+      %{id: 0x21, value: <<0xAA, 0xBB>>},
       %{id: 0x03, value: <<0x44, 0xB0>>}
     ]
 
     assert {:ok, wire} = TransportParameters.encode(ordered)
-    assert wire == <<0x00, 0x02, 1, 2, 0x20, 0x02, 0xAA, 0xBB, 0x03, 0x02, 0x44, 0xB0>>
+    assert wire == <<0x00, 0x02, 1, 2, 0x21, 0x02, 0xAA, 0xBB, 0x03, 0x02, 0x44, 0xB0>>
     assert {:ok, decoded} = TransportParameters.decode(wire)
     assert decoded.ordered == ordered
-    assert decoded.unknown == [{0x20, <<0xAA, 0xBB>>}]
+    assert decoded.unknown == [{0x21, <<0xAA, 0xBB>>}]
     assert decoded.values.original_destination_connection_id == <<1, 2>>
     assert decoded.values.max_udp_payload_size == 1200
   end

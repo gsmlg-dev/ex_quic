@@ -71,6 +71,12 @@ defmodule Quic.Connection do
   def send_public_stream(pid, generation, id, data, fin, opts),
     do: operation_call(pid, generation, {:send, id, data, fin}, opts)
 
+  def send_public_datagram(pid, generation, data, opts \\ []),
+    do: operation_call(pid, generation, {:send_datagram, data}, opts)
+
+  def read_datagrams(pid, generation, max, opts \\ []),
+    do: durable_call(pid, {:read_datagrams, max}, generation, opts)
+
   def reset_public_stream(pid, generation, id, code, opts \\ []),
     do: operation_call(pid, generation, {:reset, id, code}, opts)
 
@@ -178,6 +184,12 @@ defmodule Quic.Connection do
           consumer: nil,
           consumer_monitor: nil,
           events: [],
+          datagrams: [],
+          datagram_bytes: 0,
+          datagram_drops: 0,
+          datagram_max_items: Keyword.get(Keyword.get(opts, :datagram, []), :max_items, 64),
+          datagram_max_bytes:
+            Keyword.get(Keyword.get(opts, :datagram, []), :max_buffer_bytes, 65_536),
           event_limit: event_limit,
           operations: %{},
           operation_sequence: 0,
@@ -378,6 +390,37 @@ defmodule Quic.Connection do
 
           {:keep_state, record_operation(data, ref, signature, :rejected, result),
            [{:reply, from, result}]}
+        end
+
+      match?({:read_datagrams, _}, request) and phase == :established ->
+        {:read_datagrams, max} = request
+
+        cond do
+          data.scheduler.local_max_datagram_frame_size == 0 ->
+            result = {:error, :datagram_unsupported}
+
+            {:keep_state, record_operation(data, ref, signature, :rejected, result),
+             [{:reply, from, result}]}
+
+          is_integer(max) and max in 1..128 ->
+            {out, rest} = Enum.split(data.datagrams, max)
+            bytes = Enum.reduce(out, 0, &(byte_size(&1) + &2))
+            next = %{data | datagrams: rest, datagram_bytes: data.datagram_bytes - bytes}
+
+            next =
+              if rest == [],
+                do: %{next | events: List.delete(next.events, :datagram_readable)},
+                else: queue_event(next, :datagram_readable)
+
+            result = {:ok, out}
+            next = record_operation(next, ref, signature, :completed, result)
+            {:keep_state, next, [{:reply, from, result}]}
+
+          true ->
+            result = {:error, :invalid_operation}
+
+            {:keep_state, record_operation(data, ref, signature, :rejected, result),
+             [{:reply, from, result}]}
         end
 
       match?({:read, _, _}, request) and phase == :established ->
@@ -767,6 +810,15 @@ defmodule Quic.Connection do
         reason = {:tls, error.kind, error.alert, error.reason}
         {:stop_and_reply, :normal, [{:reply, from, {:error, reason}}], %{data | reason: reason}}
 
+      {:error, {:protocol_violation, 0x0A, frame_type} = reason, scheduler} ->
+        case begin_closing(%{data | scheduler: scheduler}, {:transport, 0x0A, frame_type}) do
+          {:ok, next, actions} ->
+            {:next_state, :closing, next, [{:reply, from, {:error, reason}} | actions]}
+
+          {:error, close_reason, next} ->
+            stop_with_replies(next, close_reason, [{:reply, from, {:error, reason}}])
+        end
+
       {:error, reason, _scheduler} ->
         stop_with_replies(data, reason, [{:reply, from, {:error, reason}}])
     end
@@ -1008,6 +1060,9 @@ defmodule Quic.Connection do
             {:application, code, opaque} ->
               %{type: :application_close, error_code: code, reason: opaque}
 
+            {:transport, code, frame_type} ->
+              %{type: :connection_close, error_code: code, frame_type: frame_type, reason: <<>>}
+
             _ ->
               %{type: :application_close, error_code: 0, reason: <<>>}
           end
@@ -1090,6 +1145,11 @@ defmodule Quic.Connection do
       parameters_valid: data.parameters_valid,
       peer_authenticated: data.scheduler.tls.facts.peer_authenticated,
       quic_confirmed: data.scheduler.tls.facts.quic_confirmed,
+      datagram: %{
+        send_max_bytes:
+          datagram_payload_limit(HandshakeScheduler.effective_datagram_frame_size(data.scheduler)),
+        receive_max_bytes: datagram_payload_limit(data.scheduler.local_max_datagram_frame_size)
+      },
       resources: resources,
       highwaters:
         Map.merge(resources, data.highwaters, fn _key, current, peak -> max(current, peak) end)
@@ -1110,6 +1170,9 @@ defmodule Quic.Connection do
           bytes + :erlang.external_size(operation.result)
         end),
       queued_bytes: data.scheduler.queued_bytes,
+      datagram_ready_bytes: data.datagram_bytes,
+      datagram_ready_items: length(data.datagrams),
+      datagram_drops: data.datagram_drops,
       ready_bytes: streams.ready_bytes,
       receive_buffered_bytes:
         Enum.reduce(streams.streams, 0, fn {_, s}, acc -> acc + s.recv_buffered end),
@@ -1174,6 +1237,17 @@ defmodule Quic.Connection do
 
   defp collect_stream_events(data, events) do
     Enum.reduce(events, data, fn
+      %{type: :datagram, data: bytes}, data ->
+        if length(data.datagrams) < data.datagram_max_items and
+             data.datagram_bytes + byte_size(bytes) <= data.datagram_max_bytes do
+          data
+          |> Map.update!(:datagrams, &(&1 ++ [bytes]))
+          |> Map.update!(:datagram_bytes, &(&1 + byte_size(bytes)))
+          |> queue_event(:datagram_readable)
+        else
+          %{data | datagram_drops: data.datagram_drops + 1}
+        end
+
       %{type: type, frame: frame}, data when type in [:stream, :reset_stream] ->
         id = frame.stream_id
         handle = %StreamHandle{connection: public_handle(data), id: id}
@@ -1212,6 +1286,20 @@ defmodule Quic.Connection do
       length(data.events) >= data.event_limit - 1 -> %{data | event_error: :consumer_event_limit}
       true -> observe(%{data | events: data.events ++ [event]})
     end
+  end
+
+  defp datagram_payload_limit(max_frame) when max_frame <= 1, do: 0
+  defp datagram_payload_limit(max_frame), do: datagram_payload_limit(max_frame, 0, max_frame)
+
+  defp datagram_payload_limit(_frame, low, high) when low >= high, do: low
+
+  defp datagram_payload_limit(frame, low, high) do
+    candidate = div(low + high + 1, 2)
+    {:ok, length} = Quic.Codec.encode_varint(candidate)
+
+    if 1 + byte_size(length) + candidate <= frame,
+      do: datagram_payload_limit(frame, candidate, high),
+      else: datagram_payload_limit(frame, low, candidate - 1)
   end
 
   defp record_operation(data, ref, signature, status, result) do
@@ -1267,6 +1355,9 @@ defmodule Quic.Connection do
         {:send, id, bytes, fin}
         when is_integer(id) and id >= 0 and is_binary(bytes) and is_boolean(fin) ->
           HandshakeScheduler.send_stream(data.scheduler, id, bytes, fin)
+
+        {:send_datagram, bytes} ->
+          HandshakeScheduler.send_datagram(data.scheduler, bytes)
 
         {:reset, id, code}
         when is_integer(id) and id >= 0 and is_integer(code) and code >= 0 and

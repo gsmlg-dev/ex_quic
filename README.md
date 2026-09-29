@@ -40,7 +40,7 @@ The GitHub repository remains `gsmlg-dev/ex_quic`; the public module namespace i
 Starting with the first Hex release, depend on:
 
 ```elixir
-{:elixir_quic, "~> 0.2.2"}
+{:elixir_quic, "~> 0.3.0"}
 ```
 
 Consumers moving from the Git dependency must replace their `:ex_quic`
@@ -53,6 +53,19 @@ Copy/adapt these documents into the workspace while preserving local code and us
 
 Local tests cover codecs, packet protection, inspection, recovery, and both-role UDP certificate handshakes. These self-connection tests are not independent interoperability or security certification. The full product gate requires observer + measured client profiles + Abyss termination; HTTP/3/QPACK and additional TLS features remain separate work.
 
+
+## Application ALPN and unreliable datagrams
+
+Profiles accept application ALPN, for example
+`Quic.Profile.compile(:ordered, alpn: ["h3"])`; the default remains `ex-quic`.
+Negotiating `h3` does not implement HTTP/3 or QPACK. Consumers own those protocols.
+
+RFC 9221 DATAGRAM support is opt-in per endpoint with
+`datagram: [max_frame_size: 1200, max_items: 64, max_buffer_bytes: 65_536]`.
+Use `Quic.send_datagram/3` and `Quic.read_datagrams/3` with a public connection
+handle. DATAGRAM payloads are unreliable, message-oriented, congestion-controlled,
+and never retransmitted after loss. See the [consumer contract](docs/consumer-contract.md)
+for negotiation, size limits, bounded queues and admission semantics.
 
 ## Publishing
 
@@ -67,7 +80,7 @@ publish permission for `elixir_quic` before dispatching. Missing credentials fai
 before any version commit, tag or publication. HexDocs publication is separate;
 this workflow publishes the package only.
 
-For the next release, use `version=0.2.2` and `git_ref=main`. Existing `v0.2.1`
+Dispatch with the intended new version and `git_ref=main`. Existing `v0.2.1`
 and earlier tags remain source-only releases; this change does not republish them.
 Validate packaging locally without publishing:
 

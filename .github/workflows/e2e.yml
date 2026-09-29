@@ -69,3 +69,8 @@ jobs:
           mix run scripts/phase1/interop.exs client
           mix run scripts/phase1/interop.exs server
           PHASE1_EXTERNAL=1 mix run scripts/phase1/interop.exs server
+
+      - name: Verify HTTP/3 ALPN and QUIC DATAGRAM with aioquic
+        run: |
+          mix run scripts/datagram/interop.exs client
+          mix run scripts/datagram/interop.exs server

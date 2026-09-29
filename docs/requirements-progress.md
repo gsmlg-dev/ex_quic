@@ -1,5 +1,9 @@
 # Implementation progress
 
+The application ALPN / RFC 9221 DATAGRAM increment is tracked separately in
+[DATAGRAM acceptance](datagram-acceptance.md), including independent peer checks.
+It extends transport capabilities without implementing HTTP/3 or QPACK.
+
 This record tracks incremental work against `docs/implement-plan.md`; intermediate runtime tests do not complete the M3 independent-peer gate.
 
 The 2026-09-28 Phase 1 increment and current consumer/I/O contract are recorded in

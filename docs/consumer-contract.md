@@ -16,6 +16,11 @@ TLS options are supplied under `:tls`: server certificate chain, signing key and
 ALPN; client trust anchors, reference identity and ALPN. Trust/reference checks
 belong to `SSL.QUIC`. There is no insecure verification fallback.
 
+Client profiles accept an ordered ALPN list with
+`Quic.Profile.compile(:ordered, alpn: ["h3"])` (also supported by `:compact`).
+Omitting it preserves `["ex-quic"]`. Application ALPN is a transport selection;
+HTTP/3 framing and QPACK remain consumer responsibilities.
+
 `Quic.connect(endpoint, remote, options)` admits a client connection and returns
 `{:ok, connection_handle}` before readiness. Server endpoints notify the acceptor
 with `{:quic_accept, endpoint}` when their ready accept queue becomes nonempty.
@@ -89,6 +94,42 @@ reason \\ <<>>, options \\ [])` sends an application close. Codes are opaque
 `{:quic_closed, connection, reason}` on termination. Closing and draining retain
 routes until cleanup, so late packets do not admit replacement connections.
 
+## Unreliable application datagrams
+
+RFC 9221 DATAGRAM is disabled by default. Set endpoint options such as
+`datagram: [max_frame_size: 1200, max_items: 64, max_buffer_bytes: 65_536]`
+to advertise receive support and bound the retained receive queue. The frame
+limit includes the encoded type and length fields, not only the application
+payload. Support is directional: sending requires the peer's nonzero advertised
+limit. Application data is accepted only after connection readiness.
+
+`Quic.send_datagram(connection, binary, options \\ [])` returns `{:ok, ref}`
+for bounded admission. Queue or congestion pressure can return `{:blocked, reason}`;
+missing negotiated support and oversized input return explicit errors. Check
+`info.datagram` for payload limits of length-prefixed frames. The send limit
+reserves room for the maximum CID and packet-number widths so queued messages
+remain valid if those fields grow. A peer can send a lengthless frame with one
+byte of type overhead; actual encoded receive size is always checked against
+the advertised frame limit. Payloads are never split across packets.
+As with stream writes, admission is neither local send completion
+nor confirmation of peer application delivery; timeout/reference rules below apply.
+
+`Quic.read_datagrams(connection, max \\ 32, options \\ [])` returns
+`{:ok, [binary]}` to the attached consumer. Each binary is one complete message,
+including a possible empty message. `:datagram_readable` is a coalesced public
+event; drain the bounded queue using this API. The receive queue may drop incoming
+DATAGRAMs when its item or byte budget is exhausted. Payloads are not pushed into
+the consumer mailbox. Queue bytes/items and drops are exposed as
+`datagram_ready_bytes`, `datagram_ready_items` and `datagram_drops` in resources.
+Reading with receive support disabled returns `{:error, :datagram_unsupported}`.
+DATAGRAM bytes do not consume stream flow-control credit.
+
+DATAGRAM frames elicit ACKs and use QUIC congestion control, but are not
+retransmitted after loss or by PTO probes. Applications must tolerate loss and
+reordering. This implementation uses 1-RTT only; 0-RTT remains unsupported.
+`Quic.capabilities().datagram` describes library support, while per-connection
+metadata describes negotiation. `http3` remains `false`.
+
 ## Admission outcomes and resource policy
 
 Connect, accept, reads and event draining also support these operation options.
@@ -96,8 +137,11 @@ Connect, accept, reads and event draining also support these operation options.
 `Quic.operation_status(endpoint, ref)` resolves endpoint admissions. Destructive
 pull results are cached as `:completed`, so a timed-out read can recover its exact
 bytes using the same reference. Read results retained in the operation cache
-consume additional bounded memory (up to 16 KiB per read result); resource byte
-counters describe active stream queues, not cached reply binaries.
+consume additional bounded memory: up to 16 KiB per stream read, and up to the
+DATAGRAM receive byte budget per DATAGRAM read (64 KiB by default, configurable
+up to 1 MiB). These retained replies can accumulate across the bounded operation
+cache. Resource queue counters exclude cached replies; `operation_result_bytes`
+reports their encoded size.
 
 Mutation options include a caller reference `:ref`, call timeout `:timeout` in
 milliseconds (default 5000), and admission deadline duration `:deadline` in
@@ -129,7 +173,8 @@ application-level CRYPTO bytes. `operation_result_bytes` is encoded result size,
 not total VM heap memory; `tracked_references` counts operation references,
 I/O receipt/timer references, generation and owner/writer/consumer monitors.
 Mailbox values remain samples at observation points, not a global VM profiler. Application CRYPTO tickets can be parsed/ignored, but resumption/0-RTT,
-DATAGRAM, migration, HTTP/3, QPACK and WebTransport are unsupported.
+migration, HTTP/3, QPACK and WebTransport are unsupported. DATAGRAM support is
+described above.
 
 The older PID-oriented `Quic.Connection` and diagnostic `stream_observer` seams
 remain for internal tests. Downstream applications should use the generation

@@ -66,6 +66,16 @@ defmodule Quic do
       ),
       do: Connection.read(pid, generation, id, max, opts)
 
+  @spec send_datagram(ConnectionHandle.t(), binary(), operation_options()) ::
+          {:ok, reference()} | failure()
+  def send_datagram(%ConnectionHandle{id: pid, generation: generation}, data, opts \\ []),
+    do: Connection.send_public_datagram(pid, generation, data, opts)
+
+  @spec read_datagrams(ConnectionHandle.t(), pos_integer(), operation_options()) ::
+          {:ok, [binary()]} | failure()
+  def read_datagrams(%ConnectionHandle{id: pid, generation: generation}, max \\ 32, opts \\ []),
+    do: Connection.read_datagrams(pid, generation, max, opts)
+
   @spec events(ConnectionHandle.t(), pos_integer(), operation_options()) ::
           {:ok, list()} | failure()
   def events(%ConnectionHandle{id: pid, generation: generation}, max \\ 32, opts \\ []),
@@ -119,7 +129,7 @@ defmodule Quic do
       max_write_bytes: 16_384,
       delivery: :pull,
       io: [:standalone, :external],
-      datagram: false,
+      datagram: true,
       http3: false,
       resumption: false
     }

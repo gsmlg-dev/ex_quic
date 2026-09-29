@@ -24,9 +24,11 @@ defmodule Quic.Profile do
 
   def compile(name, opts) when name in [:ordered, :compact] and is_list(opts) do
     tp = Keyword.get(opts, :transport_parameters, <<>>)
+    alpn = Keyword.get(opts, :alpn, ["ex-quic"])
 
-    with true <- is_binary(tp) and byte_size(tp) <= 65_000,
-         {:ok, profile} <- validate_wire(name, tp),
+    with :ok <- validate_transport_parameters(tp),
+         :ok <- validate_alpn(alpn),
+         {:ok, profile} <- validate_wire(name, tp, alpn),
          {:ok, cid_length} <- cid_length(Keyword.get(opts, :cid_length, default_cid(name))),
          {:ok, max_packet_size} <- packet_size(Keyword.get(opts, :max_packet_size, 1_350)) do
       {:ok,
@@ -38,7 +40,6 @@ defmodule Quic.Profile do
          max_packet_size: max_packet_size
        }}
     else
-      false -> {:error, {:invalid_profile, :transport_parameters}}
       {:error, _} = error -> error
     end
   end
@@ -72,7 +73,7 @@ defmodule Quic.Profile do
     }
   end
 
-  defp validate_wire(name, transport_parameters) do
+  defp validate_wire(name, transport_parameters, alpn) do
     profile = %WireProfile{
       session_id: :empty,
       record: %RecordPolicy{mode: :none},
@@ -82,7 +83,7 @@ defmodule Quic.Profile do
         {:supported_groups, if(name == :ordered, do: [0x001D, 0x0017], else: [0x0017, 0x001D])},
         {:signature_algorithms, [0x0403, 0x0804]},
         {:signature_algorithms_cert, [0x0403, 0x0804]},
-        {:alpn, ["ex-quic"]},
+        {:alpn, alpn},
         {:key_share, [0x001D]},
         {:raw, 57, transport_parameters}
       ]
@@ -93,6 +94,20 @@ defmodule Quic.Profile do
       {:error, reason} -> {:error, {:invalid_profile, reason}}
     end
   end
+
+  defp validate_transport_parameters(tp) when is_binary(tp) and byte_size(tp) <= 65_000,
+    do: :ok
+
+  defp validate_transport_parameters(_), do: {:error, {:invalid_profile, :transport_parameters}}
+
+  defp validate_alpn(alpn) when is_list(alpn) and alpn != [] do
+    if Enum.all?(alpn, &(is_binary(&1) and byte_size(&1) in 1..255)) and
+         Enum.sum(Enum.map(alpn, &byte_size/1)) + length(alpn) <= 65_535,
+       do: :ok,
+       else: {:error, {:invalid_profile, :alpn}}
+  end
+
+  defp validate_alpn(_), do: {:error, {:invalid_profile, :alpn}}
 
   defp cid_length(value) when is_integer(value) and value in 8..20, do: {:ok, value}
   defp cid_length(_), do: {:error, {:invalid_profile, :cid_length}}

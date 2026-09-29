@@ -373,8 +373,10 @@ defmodule Quic.Endpoint do
              original_dcid,
              scid,
              retry_scid,
-             Keyword.get(data.opts, :streams, [])
+             Keyword.get(data.opts, :streams, []),
+             Keyword.get(data.opts, :datagram, [])
            ),
+         {:ok, local_parameters} <- TransportParameters.decode(tls[:transport_parameters]),
          opts <- [
            role: data.role,
            address_validated: retry_scid != nil,
@@ -385,6 +387,7 @@ defmodule Quic.Endpoint do
            public: Keyword.get(data.opts, :public, false),
            event_limit: Keyword.get(data.opts, :event_limit, 128),
            operation_limit: Keyword.get(data.opts, :operation_limit, 256),
+           datagram: Keyword.get(data.opts, :datagram, []),
            handshake_timeout: Keyword.get(data.opts, :handshake_timeout, 10_000),
            idle_timeout: Keyword.get(data.opts, :idle_timeout, 30_000),
            closing_timeout: Keyword.get(data.opts, :closing_timeout),
@@ -397,6 +400,8 @@ defmodule Quic.Endpoint do
                initial_key_dcid: retry_scid || original_dcid,
                retry_scid: retry_scid,
                streams: Keyword.get(data.opts, :streams, []),
+               max_datagram_frame_size:
+                 Map.get(local_parameters.values, :max_datagram_frame_size, 0),
                max_packet_size: profile_packet_size(profile)
              ] ++ tls
          ],
@@ -444,13 +449,15 @@ defmodule Quic.Endpoint do
     :exit, _ -> {:error, :connection_start_failed}
   end
 
-  defp materialize(tls, role, original, scid, retry_scid, stream_opts) do
+  defp materialize(tls, role, original, scid, retry_scid, stream_opts, datagram_opts) do
     entries = [%{id: 0x0F, value: scid}]
     entries = if role == :server, do: [%{id: 0, value: original} | entries], else: entries
     entries = if retry_scid, do: [%{id: 0x10, value: retry_scid} | entries], else: entries
 
     with {:ok, stream_entries} <- stream_transport_entries(stream_opts),
-         {:ok, generated} <- TransportParameters.encode(entries ++ stream_entries, role: role),
+         {:ok, datagram_entries} <- datagram_transport_entries(datagram_opts),
+         {:ok, generated} <-
+           TransportParameters.encode(entries ++ stream_entries ++ datagram_entries, role: role),
          tls <- apply_profile(tls, generated),
          raw <- Keyword.get(tls, :transport_parameters, generated),
          {:ok, decoded} <- TransportParameters.decode(raw),
@@ -464,6 +471,26 @@ defmodule Quic.Endpoint do
       {:ok, Keyword.put(tls, :transport_parameters, raw)}
     end
   end
+
+  defp datagram_transport_entries(opts) when is_list(opts) do
+    max_frame = Keyword.get(opts, :max_frame_size, 0)
+    max_items = Keyword.get(opts, :max_items, 64)
+    max_bytes = Keyword.get(opts, :max_buffer_bytes, 65_536)
+
+    if is_integer(max_frame) and max_frame in 0..65_527 and is_integer(max_items) and
+         max_items in 1..1024 and is_integer(max_bytes) and max_bytes in 0..1_048_576 do
+      if max_frame == 0 do
+        {:ok, []}
+      else
+        {:ok, wire} = Quic.Codec.encode_varint(max_frame)
+        {:ok, [%{id: 0x20, value: wire}]}
+      end
+    else
+      {:error, :invalid_datagram_options}
+    end
+  end
+
+  defp datagram_transport_entries(_), do: {:error, :invalid_datagram_options}
 
   defp stream_transport_entries(opts) do
     streams = Quic.Streams.new(:server, opts)

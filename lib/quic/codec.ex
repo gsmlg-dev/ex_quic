@@ -208,6 +208,12 @@ defmodule Quic.Codec do
   defp encode_frames([%{type: :handshake_done} | rest], acc),
     do: encode_frames(rest, [<<0x1E>> | acc])
 
+  defp encode_frames([%{type: :datagram, data: data} | rest], acc) when is_binary(data) do
+    with {:ok, length} <- encode_varint(byte_size(data)) do
+      encode_frames(rest, [data, length, <<0x31>> | acc])
+    end
+  end
+
   defp encode_frames(
          [%{type: :stream, stream_id: id, offset: offset, data: data} = frame | rest],
          acc
@@ -427,6 +433,12 @@ defmodule Quic.Codec do
   defp decode_frames(<<0x1E, rest::binary>>, acc, limit),
     do: decode_frames(rest, [%{type: :handshake_done} | acc], limit - 1)
 
+  defp decode_frames(<<0x30, rest::binary>>, acc, limit),
+    do: decode_datagram(0x30, rest, acc, limit, 1)
+
+  defp decode_frames(<<0x31, rest::binary>>, acc, limit),
+    do: decode_datagram(0x31, rest, acc, limit, 1)
+
   defp decode_frames(<<type, rest::binary>>, acc, limit) when type in 0x08..0x0F do
     fin = (type &&& 1) == 1
     has_length = (type &&& 2) == 2
@@ -492,8 +504,52 @@ defmodule Quic.Codec do
   defp decode_frames(<<type, _::binary>>, _acc, _limit) when type >= 0x08 and type <= 0x0F,
     do: {:error, :unsupported_frame}
 
+  defp decode_frames(<<type, _::binary>> = wire, acc, limit)
+       when (type &&& 0xC0) != 0 do
+    case decode_varint(wire) do
+      {:ok, kind, rest} when kind in [0x30, 0x31] ->
+        decode_datagram(kind, rest, acc, limit, byte_size(wire) - byte_size(rest))
+
+      {:ok, kind, _} ->
+        {:error, {:unknown_frame, kind}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp decode_frames(<<type, _::binary>>, _acc, _limit), do: {:error, {:unknown_frame, type}}
   defp decode_frames(_, _, _), do: {:error, :malformed_frame}
+
+  defp decode_datagram(0x30, rest, acc, limit, type_size) do
+    frame = %{
+      type: :datagram,
+      data: rest,
+      wire_size: type_size + byte_size(rest),
+      wire_type: 0x30
+    }
+
+    decode_frames(<<>>, [frame | acc], limit - 1)
+  end
+
+  defp decode_datagram(0x31, rest, acc, limit, type_size) do
+    before_length = byte_size(rest)
+
+    with {:ok, length, after_length} <- decode_varint(rest),
+         :ok <- bound_length(length, byte_size(after_length)),
+         <<data::binary-size(^length), tail::binary>> <- after_length do
+      frame = %{
+        type: :datagram,
+        data: data,
+        wire_size: type_size + before_length - byte_size(after_length) + length,
+        wire_type: 0x31
+      }
+
+      decode_frames(tail, [frame | acc], limit - 1)
+    else
+      _ -> {:error, :malformed_datagram_frame}
+    end
+  end
 
   @doc "Validate encryption-level constraints that cannot be inferred from frame bytes."
   @spec validate_frame_levels([map()], :initial | :handshake | :application) ::
@@ -512,6 +568,12 @@ defmodule Quic.Codec do
 
       %{type: :handshake_done}, :ok ->
         {:halt, {:wrong_encryption_level, :handshake_done, level}}
+
+      %{type: :datagram}, :ok when level == :application ->
+        {:cont, :ok}
+
+      %{type: :datagram}, :ok ->
+        {:halt, {:wrong_encryption_level, :datagram, level}}
 
       %{type: type}, :ok
       when type in [:new_connection_id, :retire_connection_id] and level == :application ->

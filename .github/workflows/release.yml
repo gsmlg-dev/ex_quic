@@ -81,6 +81,7 @@ jobs:
         run: |
           mix format --check-formatted
           mix format --check-formatted scripts/phase1/interop.exs scripts/phase1/release_check.exs
+          mix format --check-formatted scripts/datagram/interop.exs
           mix compile --warnings-as-errors
           mix run --no-start -e 'config = Mix.Project.config(); unless config[:app] == :elixir_quic and config[:version] == System.fetch_env!("RELEASE_VERSION"), do: raise("release identity mismatch")'
           mix test --seed 28092026
