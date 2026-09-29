@@ -1,3 +1,3 @@
 %{
-  "ex_ssl": {:git, "https://github.com/gsmlg-dev/ex_ssl.git", "f1327e0bb7fb2093b8dc2b07e72b26233a739963", [ref: "f1327e0bb7fb2093b8dc2b07e72b26233a739963"]},
+  "ex_ssl": {:hex, :ex_ssl, "0.7.2", "cba8ff536d7571537e75d112d2712ba49b5b406bc475acc1dda253b513229ab3", [:mix], [], "hexpm", "f0f9532a6ac8b2dcb701b491394705df8f10c31f63fc7e5aad157eebb909aecb"},
 }

@@ -1,4 +1,4 @@
-fixture = Path.expand("../../deps/ex_ssl/test/fixtures/server_flight", __DIR__)
+fixture = Path.expand("../../test/fixtures/tls", __DIR__)
 
 der = fn name ->
   [{:Certificate, bytes, :not_encrypted}] =

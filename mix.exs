@@ -3,8 +3,11 @@ defmodule ExQuic.MixProject do
 
   def project do
     [
-      app: :ex_quic,
+      app: :elixir_quic,
       version: "0.2.1",
+      description:
+        "Experimental QUIC v1 transport, Initial fingerprint observation and client profiles",
+      package: package(),
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -20,11 +23,15 @@ defmodule ExQuic.MixProject do
     [preferred_envs: ["test.watch": :test]]
   end
 
-  defp deps do
+  defp package do
     [
-      {:ex_ssl,
-       git: "https://github.com/gsmlg-dev/ex_ssl.git",
-       ref: "f1327e0bb7fb2093b8dc2b07e72b26233a739963"}
+      files: ["lib", "mix.exs", "README.md", "LICENSE"],
+      licenses: ["MIT"],
+      links: %{"GitHub" => "https://github.com/gsmlg-dev/ex_quic"}
     ]
+  end
+
+  defp deps do
+    [{:ex_ssl, "== 0.7.2"}]
   end
 end

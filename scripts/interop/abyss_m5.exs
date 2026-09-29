@@ -14,7 +14,7 @@ defmodule QUIC.AbyssM5Handler do
   def handle_data(_data, state), do: {:continue, state}
 end
 
-fixture = Path.join(ex_quic_root, "deps/ex_ssl/test/fixtures/server_flight")
+fixture = Path.join(ex_quic_root, "test/fixtures/tls")
 
 der = fn name ->
   [{:Certificate, bytes, :not_encrypted}] =

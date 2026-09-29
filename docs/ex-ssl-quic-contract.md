@@ -1,4 +1,4 @@
-# ex_ssl integration contract — G-S source pin
+# ex_ssl integration contract — verified G-S Hex dependency
 
 Reviewed and pinned G-S source: `gsmlg-dev/ex_ssl@f1327e0bb7fb2093b8dc2b07e72b26233a739963`. The prior review baseline was `02eb981f59d4e182d4473e264a9f8b093ec6bf3d`; the upstream Phase 1 acceptance record identifies the new immutable commit. The upstream API is experimental but exists; this document replaces the earlier proposed TLS-export interface. The upstream source and interface document win if this summary drifts. [R1,R3]
 
@@ -6,7 +6,7 @@ Reviewed and pinned G-S source: `gsmlg-dev/ex_ssl@f1327e0bb7fb2093b8dc2b07e72b26
 
 Use `SSL.QUIC.capabilities/0`, `new/2`, `feed/3`, `info/1`, `abort/2`, `SSL.QUIC.Secret` and `SSL.QUIC.Error`; public `SSL.Fingerprint` functions; and documented public ClientHello profile types. Do not reach into `SSL.Protocol.HandshakeCore`, `ClientOffer`, `ServerHandshake`, or `SSL.Crypto.TrafficState` from production ex_quic code.
 
-The initial dependency is a Git full-SHA pin. Keep a consumer contract test so an upstream upgrade cannot silently change levels, actions, capability fields, profile behavior or error categories. No fake TLS fallback in production; test doubles are clearly test-only.
+The dependency is exactly `{:ex_ssl, "== 0.7.2"}` from Hex. On 2026-09-29, all 58 packaged `lib/` files were compared byte-for-byte with accepted G-S commit `f1327e0bb7fb2093b8dc2b07e72b26233a739963`; no production source differed. The upstream release tag is `fb47051355c9d0a29caee046fa060a745ad0ce5b` (`v0.7.2`). The downloaded package SHA-256 matches the Hex API and lockfile outer checksum: `f0f9532a6ac8b2dcb701b491394705df8f10c31f63fc7e5aad157eebb909aecb`. The original full-SHA Git pin remains the source-review reference, rather than a runtime Git dependency. Keep a consumer contract test so an upstream upgrade cannot silently change levels, actions, capability fields, profile behavior or error categories. No fake TLS fallback in production; test doubles are clearly test-only.
 
 ## Calls
 

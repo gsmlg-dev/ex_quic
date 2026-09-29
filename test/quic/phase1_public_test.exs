@@ -4,7 +4,7 @@ defmodule QUIC.Phase1PublicTest do
   alias QUIC.Runtime.StreamHandle
 
   def credentials do
-    fixture = Path.expand("../../deps/ex_ssl/test/fixtures/server_flight", __DIR__)
+    fixture = Path.expand("../fixtures/tls", __DIR__)
 
     cert = fn name ->
       [{:Certificate, der, :not_encrypted}] =

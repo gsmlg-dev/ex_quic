@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (e.g. 0.2.0)"
+        description: "Release version (e.g. 0.2.2)"
         required: true
         type: string
       git_ref:
@@ -35,12 +35,25 @@ jobs:
           fetch-depth: 0
 
       - name: Validate release
+        id: revision
         run: |
           [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           git check-ref-format --branch "$RELEASE_BRANCH"
           test "$(git branch --show-current)" = "$RELEASE_BRANCH"
           if git rev-parse --verify --quiet "refs/tags/v$RELEASE_VERSION"; then
-            echo "Release tag already exists" >&2
+            git merge-base --is-ancestor "refs/tags/v$RELEASE_VERSION" HEAD
+            git checkout --detach "refs/tags/v$RELEASE_VERSION"
+            echo "existing=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "existing=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check Hex credentials
+        env:
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+        run: |
+          if [ -z "$HEX_API_KEY" ]; then
+            echo "Configure the HEX_API_KEY Actions secret with package publish permission." >&2
             exit 1
           fi
 
@@ -51,6 +64,7 @@ jobs:
           otp-version: '29.0'
 
       - name: Update version
+        if: steps.revision.outputs.existing == 'false'
         run: |
           sed -i.bak -E "s/version: \"[^\"]+\"/version: \"$RELEASE_VERSION\"/" mix.exs
           rm -f mix.exs.bak
@@ -68,11 +82,17 @@ jobs:
           mix format --check-formatted
           mix format --check-formatted scripts/phase1/interop.exs scripts/phase1/release_check.exs
           mix compile --warnings-as-errors
+          mix run --no-start -e 'config = Mix.Project.config(); unless config[:app] == :elixir_quic and config[:version] == System.fetch_env!("RELEASE_VERSION"), do: raise("release identity mismatch")'
           mix test --seed 28092026
           git diff --check
           git diff --exit-code -- mix.lock
 
+      - name: Build Hex package
+        run: |
+          mix hex.build --output "_build/elixir_quic-$RELEASE_VERSION.tar"
+
       - name: Commit version bump
+        if: steps.revision.outputs.existing == 'false'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -80,17 +100,38 @@ jobs:
           git commit -m "chore(release): v$RELEASE_VERSION"
 
       - name: Create and push version tag
+        if: steps.revision.outputs.existing == 'false'
         run: |
           git tag "v$RELEASE_VERSION"
           git push --atomic origin "HEAD:refs/heads/$RELEASE_BRANCH" "refs/tags/v$RELEASE_VERSION"
 
-      # Hex packages cannot preserve the required Git-pinned ex_ssl dependency.
-      - name: Create GitHub source release
+      - name: Publish to Hex.pm
+        env:
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+        run: |
+          archive="_build/elixir_quic-$RELEASE_VERSION.tar"
+          metadata="$RUNNER_TEMP/hex-release.json"
+          status=$(curl --silent --show-error --output "$metadata" --write-out '%{http_code}' \
+            "https://hex.pm/api/packages/elixir_quic/releases/$RELEASE_VERSION")
+          case "$status" in
+            200)
+              python3 -c 'import hashlib,json,sys; expected=json.load(open(sys.argv[1]))["checksum"]; actual=hashlib.sha256(open(sys.argv[2], "rb").read()).hexdigest(); assert expected == actual, "Existing Hex package differs from release source"' "$metadata" "$archive"
+              echo "Matching Hex package already published."
+              ;;
+            404) mix hex.publish package --yes ;;
+            *) echo "Hex registry check failed: HTTP $status" >&2; exit 1 ;;
+          esac
+
+      - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "v$RELEASE_VERSION" \
-            --verify-tag \
-            --title "v$RELEASE_VERSION" \
-            --notes "GitHub source release. The required ex_ssl dependency remains pinned to its accepted Git SHA; this release is not published to Hex." \
-            --generate-notes
+          if gh release view "v$RELEASE_VERSION" >/dev/null 2>&1; then
+            gh release upload "v$RELEASE_VERSION" "_build/elixir_quic-$RELEASE_VERSION.tar" --clobber
+          else
+            gh release create "v$RELEASE_VERSION" "_build/elixir_quic-$RELEASE_VERSION.tar" \
+              --verify-tag \
+              --title "v$RELEASE_VERSION" \
+              --notes "Published to Hex.pm: https://hex.pm/packages/elixir_quic/$RELEASE_VERSION" \
+              --generate-notes
+          fi

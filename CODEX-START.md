@@ -26,7 +26,7 @@ Use `gsmlg-dev/ex_ssl` at full commit `02eb981f59d4e182d4473e264a9f8b093ec6bf3d`
 
 `SSL.QUIC` and `SSL.Fingerprint` already exist. Do not reopen the completed upstream refactor. Use their documented public contracts, not `SSL.Protocol.*` internals. TLS owns authentication/transcript/fresh key exchange; QUIC owns packet protection, offsets, recovery and transport parameters. Do not implement TLS again, use TLS record TrafficState for packets, or call OTP :ssl as the production handshake implementation.
 
-Use Elixir protocol logic and OTP :crypto/:public_key/network primitives; no C/Rust QUIC dependency or hidden fallback. Name the app `:ex_quic` and public namespace `QUIC`, not `ExQUIC` or a replacement OTP :ssl module.
+Use Elixir protocol logic and OTP :crypto/:public_key/network primitives; no C/Rust QUIC dependency or hidden fallback. Name the app `:elixir_quic` (Hex package `elixir_quic`; repository `ex_quic`) and public namespace `QUIC`, not `ExQUIC` or a replacement OTP :ssl module.
 
 ## Required code in this slice
 

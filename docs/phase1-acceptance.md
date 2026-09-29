@@ -226,3 +226,40 @@ Independent pinned `aioquic==1.2.0` Phase 1 impaired-stream checks also passed
 with `PHASE1_EXTERNAL=1` for the external server. Each reported payload integrity,
 cleanup and zero remaining CID routes. These are the existing ex_quic fixtures,
 not the downstream joint reproduction.
+
+## Hex publication migration (2026-09-29)
+
+The OTP application and Hex package are now `elixir_quic` / `:elixir_quic`;
+all existing library modules, including the public `QUIC` API, are unchanged.
+The repository remains `gsmlg-dev/ex_quic`. The project is MIT licensed;
+repository-owned test credentials retain their upstream Apache-2.0 attribution
+and are excluded from the package. Existing source-only release tags are unchanged.
+
+The exact Hex dependency `ex_ssl 0.7.2` replaces the G-S Git dependency. All 58
+packaged production files matched the accepted source byte-for-byte; the package
+checksum and source revision are recorded in `ex-ssl-quic-contract.md`. Tests and
+interop scripts use attributed local test credentials, since Hex excludes the
+upstream test directory.
+
+Elixir 1.18.5 / OTP 28.5.0.5, seed `28092026`: strict compilation, formatting,
+`mix test --seed 28092026` (211 tests), `mix hex.build`, package unpacking, YAML
+and workflow shell syntax validation, and `git diff --check` passed. The renamed
+production release started, passed `scripts/phase1/release_check.exs` through RPC,
+and stopped. An initial immediate RPC preceded daemon readiness and returned
+`:noconnection`; the RPC succeeded once the daemon was available. Three existing
+impaired aioquic arrangements passed with the Hex dependency and local fixtures.
+An earlier separate fixture-focused run observed the existing metrics-test race
+(event count 1 after draining rather than 0); no assertion or runtime behavior
+was changed to hide it. The complete final suite passed.
+
+Local `mix hex.publish package --dry-run --yes` requested authentication and
+exited without publishing; package validation uses `mix hex.build` instead.
+Actual publication runs only in GitHub Actions. The workflow pushes verified
+source/tag before Hex publication and supports retrying the same version, checking
+an existing package's checksum before treating it as already published.
+
+An isolated consumer of the unpacked package resolved `ex_ssl 0.7.2` from Hex,
+compiled with warnings as errors, and started a real production release with
+`:elixir_quic`, `:ex_ssl` and `:public_key`, without OTP `:ssl`. The public `QUIC`
+module and release check passed; the daemon was stopped afterward. This uses a
+clean release rather than a Mix process, since Mix/Hex itself can start OTP `:ssl`.

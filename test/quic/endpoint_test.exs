@@ -441,8 +441,7 @@ defmodule QUIC.EndpointTest do
   end
 
   defp certificate_options do
-    # Public disposable credentials from the SHA-pinned ex_ssl test fixtures.
-    fixture = Path.expand("../../deps/ex_ssl/test/fixtures/server_flight", __DIR__)
+    fixture = Path.expand("../fixtures/tls", __DIR__)
 
     der = fn name ->
       [{:Certificate, bytes, :not_encrypted}] =
