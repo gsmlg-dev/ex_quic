@@ -23,21 +23,30 @@ defmodule Quic.Phase1MetricsTest do
 
     assert eventually(fn ->
              match?(
-               {:ok, %{resources: %{event_count: count}}} when count > 0,
+               {:ok, %{resources: %{ready_bytes: 7}}},
                Quic.info(accepted)
              )
            end)
 
-    {:ok, _} = Quic.events(accepted)
+    # Routing calls Connection.deliver synchronously. Suspending the endpoint
+    # fences completed deliveries and prevents a later ACK from queuing a new
+    # :writable event between the drain and the connection's info snapshot.
+    :ok = :sys.suspend(server)
 
-    {:ok, info} = Quic.info(accepted)
-    assert info.resources.event_count == 0
-    assert info.highwaters.event_count > 0
-    assert info.highwaters.in_flight_sends == 1
-    assert info.highwaters.io_queue_entries == 1
-    assert info.highwaters.operations >= info.resources.operations
-    assert info.highwaters.pending_datagrams >= info.resources.pending_datagrams
-    assert info.highwaters.recovery_packets >= info.resources.recovery_packets
+    try do
+      assert {:ok, [_ | _]} = Quic.events(accepted, 128)
+
+      {:ok, info} = Quic.info(accepted)
+      assert info.resources.event_count == 0
+      assert info.highwaters.event_count > 0
+      assert info.highwaters.in_flight_sends == 1
+      assert info.highwaters.io_queue_entries == 1
+      assert info.highwaters.operations >= info.resources.operations
+      assert info.highwaters.pending_datagrams >= info.resources.pending_datagrams
+      assert info.highwaters.recovery_packets >= info.resources.recovery_packets
+    after
+      :ok = :sys.resume(server)
+    end
   end
 
   defp credentials do

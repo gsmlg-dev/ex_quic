@@ -271,3 +271,11 @@ all 211 tests passed again (seed `28092026`). The package was rebuilt and unpack
 from renamed source. Existing impaired client/server/external-server network
 checks all passed with cleanup and zero retained routes. No compatibility aliases
 with Ex/Elixir prefixes or the old all-uppercase module namespace are shipped.
+
+The first Hex-release run (`36512082713`) reproduced the metrics-test race and
+stopped before tag creation or publication. The test now waits for the actual
+seven-byte stream payload, suspends the ingress endpoint as a synchronous routing
+barrier, drains the bounded event queue and reads metrics directly from the
+connection before resuming ingress in `after`. The empty-queue and historical
+high-water assertions remain in place; no runtime code or assertion was weakened.
+The focused test and complete 211-test suite pass with seed `28092026`.
