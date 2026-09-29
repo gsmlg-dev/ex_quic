@@ -353,14 +353,17 @@ defmodule Quic.EndpointTest do
           tls: Keyword.merge(client_tls, override)
         )
 
-      on_exit(fn -> Enum.each([client, server], &stop/1) end)
       failed_endpoint = if failing_role == :client, do: client, else: server
 
-      assert eventually(fn ->
-               match?({:tls, :tls, _, _}, Endpoint.stats(failed_endpoint).last_error)
-             end)
+      try do
+        assert eventually(fn ->
+                 match?({:tls, :tls, _, _}, Endpoint.stats(failed_endpoint).last_error)
+               end)
 
-      assert Endpoint.connections(failed_endpoint) == []
+        assert Endpoint.connections(failed_endpoint) == []
+      after
+        Enum.each([client, server], &stop/1)
+      end
     end
   end
 
