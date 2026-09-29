@@ -1,6 +1,6 @@
-defmodule QUIC.EndpointTest do
+defmodule Quic.EndpointTest do
   use ExUnit.Case, async: true
-  alias QUIC.{Endpoint, Connection}
+  alias Quic.{Endpoint, Connection}
 
   defmodule RecordedTLS do
     def new(:client, _), do: {:ok, :client, [{:emit, :initial, <<1, 2>>}]}
@@ -143,7 +143,7 @@ defmodule QUIC.EndpointTest do
     server_cid = <<1, 2, 3, 4, 5, 6, 7, 8>>
 
     {:ok, _client_scheduler, [initial]} =
-      QUIC.HandshakeScheduler.new(:client,
+      Quic.HandshakeScheduler.new(:client,
         dcid: server_cid,
         scid: <<9, 10, 11, 12, 13, 14, 15, 16>>,
         adapter: RecordedTLS
@@ -183,7 +183,7 @@ defmodule QUIC.EndpointTest do
     dcid = <<21, 22, 23, 24, 25, 26, 27, 28>>
 
     {:ok, _scheduler, [initial]} =
-      QUIC.HandshakeScheduler.new(:client,
+      Quic.HandshakeScheduler.new(:client,
         dcid: dcid,
         scid: <<31, 32, 33, 34, 35, 36, 37, 38>>,
         adapter: RecordedTLS
@@ -406,7 +406,7 @@ defmodule QUIC.EndpointTest do
     {ip, port} = Endpoint.local(server)
 
     {:ok, scheduler, [initial]} =
-      QUIC.HandshakeScheduler.new(:client,
+      Quic.HandshakeScheduler.new(:client,
         dcid: <<1, 2, 3, 4, 5, 6, 7, 8>>,
         scid: <<8, 7, 6, 5, 4, 3, 2, 1>>,
         adapter: RecordedTLS
@@ -423,7 +423,7 @@ defmodule QUIC.EndpointTest do
     assert {:error, :timeout} = :gen_udp.recv(socket, 0, 20)
 
     {:ok, _, [%{type: :retry, generated: [retried]}]} =
-      QUIC.HandshakeScheduler.receive_datagram(scheduler, retry, 0)
+      Quic.HandshakeScheduler.receive_datagram(scheduler, retry, 0)
 
     :ok = :gen_udp.send(other, ip, port, retried.bytes)
     assert eventually(fn -> Endpoint.stats(server).admission_drops == 2 end)

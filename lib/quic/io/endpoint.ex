@@ -1,11 +1,11 @@
-defmodule QUIC.IO.Endpoint do
+defmodule Quic.IO.Endpoint do
   @moduledoc """
   Pure bounded endpoint state for QUIC external IO.
 
   The first UDP adapter binds a concrete local address. Wildcard and
   ancillary destination/interface metadata are intentionally unsupported.
   `enqueue/4` is admission only; `local_send/4` reports the later local
-  writer result. Peer ACKs belong to `QUIC.Recovery`, never this IO budget.
+  writer result. Peer ACKs belong to `Quic.Recovery`, never this IO budget.
   """
 
   defstruct generation: 0,

@@ -1,7 +1,7 @@
-defmodule QUIC.HandshakeSchedulerTest do
+defmodule Quic.HandshakeSchedulerTest do
   use ExUnit.Case, async: true
 
-  alias QUIC.{Codec, HandshakeScheduler, Protection}
+  alias Quic.{Codec, HandshakeScheduler, Protection}
 
   defmodule Recorded do
     defstruct [:phase]
@@ -256,7 +256,7 @@ defmodule QUIC.HandshakeSchedulerTest do
     assert state.recovery.spaces.initial.sent[0].status == :queued
 
     assert state.tls.levels.initial.sent == [
-             %QUIC.TLSDriver.Emission{offset: 0, level: :initial, bytes: <<1, 2>>}
+             %Quic.TLSDriver.Emission{offset: 0, level: :initial, bytes: <<1, 2>>}
            ]
 
     assert {:ok, parsed} = Codec.parse_initial(packet)

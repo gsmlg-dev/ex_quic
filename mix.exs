@@ -1,4 +1,4 @@
-defmodule ExQuic.MixProject do
+defmodule Quic.MixProject do
   use Mix.Project
 
   def project do

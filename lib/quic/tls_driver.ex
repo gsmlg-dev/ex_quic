@@ -1,4 +1,4 @@
-defmodule QUIC.TLSDriver do
+defmodule Quic.TLSDriver do
   @moduledoc """
   Serialized adapter around the public `SSL.QUIC` action protocol.
 
@@ -6,7 +6,7 @@ defmodule QUIC.TLSDriver do
   injectable for deterministic tests; production defaults to `SSL.QUIC`.
   """
 
-  alias QUIC.CryptoReassembly
+  alias Quic.CryptoReassembly
 
   @levels [:initial, :handshake, :application]
   @level_order Map.new(Enum.with_index(@levels))

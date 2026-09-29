@@ -1,6 +1,6 @@
-defmodule QUIC.Phase1ParametersTest do
+defmodule Quic.Phase1ParametersTest do
   use ExUnit.Case, async: true
-  alias QUIC.{HandshakeScheduler, Recovery, Streams}
+  alias Quic.{HandshakeScheduler, Recovery, Streams}
 
   test "authenticated parameters install defaults, zero credit and distinct peer windows" do
     state = %HandshakeScheduler{streams: Streams.new(:client), recovery: Recovery.new()}

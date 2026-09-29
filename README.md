@@ -36,7 +36,7 @@ The upstream formatter finding is closed and the inspected supported-runtime com
 ## Adopting this package
 
 The Hex package and OTP application are `elixir_quic` / `:elixir_quic`.
-The GitHub repository remains `gsmlg-dev/ex_quic`; the public API remains `QUIC`.
+The GitHub repository remains `gsmlg-dev/ex_quic`; the public module namespace is `Quic`.
 Starting with the first Hex release, depend on:
 
 ```elixir
@@ -45,7 +45,8 @@ Starting with the first Hex release, depend on:
 
 Consumers moving from the Git dependency must replace their `:ex_quic`
 dependency/application entry with `:elixir_quic`, including application config
-or release configuration that names the old app. No public `QUIC` calls change.
+or release configuration that names the old app. Rename calls and aliases from
+`QUIC` / `QUIC.*` to `Quic` / `Quic.*`; function names and arguments are unchanged.
 The unrelated Hex package named `ex_quic` is not this library.
 
 Copy/adapt these documents into the workspace while preserving local code and user changes. Replace active v1/v2 planning instructions; move older revisions to an explicitly historical archive rather than leaving conflicting prerequisites. Do not create a remote repository or modify ex_ssl/Abyss during the initial scoped task.

@@ -1,7 +1,7 @@
-defmodule QUIC.Phase1RecoveryTest do
+defmodule Quic.Phase1RecoveryTest do
   use ExUnit.Case, async: true
 
-  alias QUIC.Recovery
+  alias Quic.Recovery
 
   defp sent(state, space, at) do
     {:ok, state, packet} = Recovery.reserve(state, space, %{kind: :stream}, 100)

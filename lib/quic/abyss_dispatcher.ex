@@ -1,13 +1,13 @@
-defmodule QUIC.AbyssDispatcher do
+defmodule Quic.AbyssDispatcher do
   @moduledoc """
-  Abyss callback adapter for the external `QUIC.Endpoint` runtime.
+  Abyss callback adapter for the external `Quic.Endpoint` runtime.
 
   This module intentionally does not compile against or call Abyss modules.
   The host dispatcher supplies a `send_fun` in the callback context; the
   adapter passes that capability to an externally owned QUIC endpoint.
   """
 
-  alias QUIC.Endpoint
+  alias Quic.Endpoint
 
   @spec init(map(), keyword()) :: {:ok, map()} | {:error, term()}
   def init(%{local_info: local_info, send_fun: send_fun}, opts)

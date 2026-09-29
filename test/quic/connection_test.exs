@@ -1,8 +1,8 @@
-defmodule QUIC.ConnectionTest do
+defmodule Quic.ConnectionTest do
   use ExUnit.Case, async: true
 
-  alias QUIC.{Connection, HandshakeScheduler}
-  alias QUIC.IO.GenUDP
+  alias Quic.{Connection, HandshakeScheduler}
+  alias Quic.IO.GenUDP
 
   defmodule RecordedTLS do
     def new(_, _), do: {:ok, 0, [{:emit, :initial, <<1, 2>>}]}

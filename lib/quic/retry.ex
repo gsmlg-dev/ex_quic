@@ -1,4 +1,4 @@
-defmodule QUIC.Retry do
+defmodule Quic.Retry do
   @moduledoc """
   Bounded, authenticated server Retry tokens. The endpoint owns the random key
   and supplies monotonic microseconds. Tokens bind the source IP/port, original

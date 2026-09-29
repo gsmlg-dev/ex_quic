@@ -1,7 +1,7 @@
-defmodule QUIC.RecoveryTest do
+defmodule Quic.RecoveryTest do
   use ExUnit.Case, async: true
 
-  alias QUIC.Recovery
+  alias Quic.Recovery
 
   defp sent(state, space, bytes, at) do
     {:ok, state, packet} = Recovery.reserve(state, space, %{kind: :crypto}, bytes)
@@ -337,10 +337,10 @@ defmodule QUIC.RecoveryTest do
   end
 end
 
-defmodule QUIC.Congestion.NewRenoTest do
+defmodule Quic.Congestion.NewRenoTest do
   use ExUnit.Case, async: true
 
-  alias QUIC.Congestion.NewReno
+  alias Quic.Congestion.NewReno
 
   test "bounded admission, growth and loss reduction" do
     state = NewReno.new(mss: 100, initial_cwnd: 200)

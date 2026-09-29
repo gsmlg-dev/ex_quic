@@ -1,14 +1,14 @@
-defmodule QUIC.Inspector do
+defmodule Quic.Inspector do
   @moduledoc """
   Passive, bounded QUIC v1 Initial observation.
 
-  `new/1` creates a flow table and `ingest/2` accepts a `QUIC.Runtime.Datagram`
+  `new/1` creates a flow table and `ingest/2` accepts a `Quic.Runtime.Datagram`
   (or an equivalent map containing `bytes`, `remote`, `generation` and
   `received_at`). It only emits observation maps; it never sends protocol
   packets or exposes TLS secrets. Each Initial key context has an independent
   packet-number reconstruction window and sparse CRYPTO interval store.
   """
-  alias QUIC.{Codec, Protection, Runtime}
+  alias Quic.{Codec, Protection, Runtime}
   import Bitwise
 
   @default_limits [

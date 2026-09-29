@@ -1,4 +1,4 @@
-defmodule QUIC.Phase1DependencyTest do
+defmodule Quic.Phase1DependencyTest do
   use ExUnit.Case, async: true
 
   test "normal application startup includes the pinned TLS runtime" do

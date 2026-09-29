@@ -1,36 +1,36 @@
-defmodule QUIC.Phase1MetricsTest do
+defmodule Quic.Phase1MetricsTest do
   use ExUnit.Case, async: true
 
-  alias QUIC.Endpoint
+  alias Quic.Endpoint
 
   test "public high-water marks persist after event and operation queues drain" do
     {server_tls, client_tls} = credentials()
-    {:ok, server} = QUIC.listen(tls: server_tls)
-    {:ok, client} = QUIC.client(tls: client_tls)
+    {:ok, server} = Quic.listen(tls: server_tls)
+    {:ok, client} = Quic.client(tls: client_tls)
     on_exit(fn -> for pid <- [server, client], Process.alive?(pid), do: GenServer.stop(pid) end)
 
-    {:ok, connection} = QUIC.connect(client, Endpoint.local(server))
-    :ok = QUIC.attach(connection, self())
+    {:ok, connection} = Quic.connect(client, Endpoint.local(server))
+    :ok = Quic.attach(connection, self())
     assert_receive {:quic_ready, ^connection, _}, 2_000
     assert_receive {:quic_accept, ^server}, 2_000
-    {:ok, accepted} = QUIC.accept(server)
-    :ok = QUIC.attach(accepted, self())
+    {:ok, accepted} = Quic.accept(server)
+    :ok = Quic.attach(accepted, self())
     assert_receive {:quic_ready, ^accepted, _}, 1_000
-    {:ok, _} = QUIC.events(accepted)
+    {:ok, _} = Quic.events(accepted)
 
-    {:ok, stream} = QUIC.open_stream(connection, :bidi)
-    {:ok, _} = QUIC.send_stream(stream, "metrics", true)
+    {:ok, stream} = Quic.open_stream(connection, :bidi)
+    {:ok, _} = Quic.send_stream(stream, "metrics", true)
 
     assert eventually(fn ->
              match?(
                {:ok, %{resources: %{event_count: count}}} when count > 0,
-               QUIC.info(accepted)
+               Quic.info(accepted)
              )
            end)
 
-    {:ok, _} = QUIC.events(accepted)
+    {:ok, _} = Quic.events(accepted)
 
-    {:ok, info} = QUIC.info(accepted)
+    {:ok, info} = Quic.info(accepted)
     assert info.resources.event_count == 0
     assert info.highwaters.event_count > 0
     assert info.highwaters.in_flight_sends == 1

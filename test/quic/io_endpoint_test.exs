@@ -1,7 +1,7 @@
-defmodule QUIC.IO.EndpointTest do
+defmodule Quic.IO.EndpointTest do
   use ExUnit.Case, async: true
 
-  alias QUIC.IO.Endpoint
+  alias Quic.IO.Endpoint
 
   test "successful sends consume amplification credit until more bytes arrive" do
     {:ok, state} = Endpoint.new()

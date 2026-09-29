@@ -1,8 +1,8 @@
-defmodule QUIC.HandshakeSchedulerLevelsTest do
+defmodule Quic.HandshakeSchedulerLevelsTest do
   use ExUnit.Case, async: true
 
-  alias QUIC.HandshakeScheduler
-  alias QUIC.Streams
+  alias Quic.HandshakeScheduler
+  alias Quic.Streams
   import Bitwise
 
   defmodule Recorded do
@@ -61,7 +61,7 @@ defmodule QUIC.HandshakeSchedulerLevelsTest do
   end
 
   # Independent RFC 9001 packet oracle using only raw OTP primitives, not
-  # QUIC.Protection's header/nonce/AEAD implementations.
+  # Quic.Protection's header/nonce/AEAD implementations.
   defp decrypt_packet(packet, keys, pn_offset) do
     sample = binary_part(packet, pn_offset + 4, 16)
     <<mask, masks::binary>> = :crypto.crypto_one_time(:aes_128_ecb, keys.hp, sample, true)
@@ -227,7 +227,7 @@ defmodule QUIC.HandshakeSchedulerLevelsTest do
     assert pn == 0
 
     assert {:ok, [%{type: :crypto, offset: 7, data: <<8, 9>>}], <<>>} =
-             QUIC.Codec.decode_frames(plaintext)
+             Quic.Codec.decode_frames(plaintext)
   end
 
   test "encodes an Initial connection close in the Initial payload" do
@@ -242,7 +242,7 @@ defmodule QUIC.HandshakeSchedulerLevelsTest do
 
     assert {:ok, _state, [effect]} = HandshakeScheduler.schedule(state)
     assert effect.level == :initial
-    assert {:ok, packet} = QUIC.Codec.parse_initial(effect.bytes)
+    assert {:ok, packet} = Quic.Codec.parse_initial(effect.bytes)
     assert byte_size(packet.payload) > 16
   end
 
@@ -269,7 +269,7 @@ defmodule QUIC.HandshakeSchedulerLevelsTest do
     assert pn == 0
 
     assert {:ok, [%{type: :crypto, offset: 0, data: <<2>>}], <<>>} =
-             QUIC.Codec.decode_frames(plaintext)
+             Quic.Codec.decode_frames(plaintext)
   end
 
   test "failed local send retains exact packet and next send does not reuse number" do

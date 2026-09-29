@@ -1,7 +1,7 @@
-defmodule QUIC.RuntimeTest do
+defmodule Quic.RuntimeTest do
   use ExUnit.Case, async: true
 
-  alias QUIC.Runtime
+  alias Quic.Runtime
 
   test "keeps datagram metadata and generation explicit" do
     datagram = %Runtime.Datagram{

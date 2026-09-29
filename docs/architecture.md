@@ -9,11 +9,11 @@ Build three first-class surfaces: a bounded passive Initial inspector, a profile
 ```text
 Supplied / mirrored datagrams                 Application
           |                                      |
-    QUIC.Inspector                         QUIC public API
+    Quic.Inspector                         QUIC public API
           |                                      |
-   Initial + CRYPTO                   QUIC.Connection (:gen_statem)
+   Initial + CRYPTO                   Quic.Connection (:gen_statem)
           |                              /        |        \
-          |                    QUIC.Engine    TLS.ExSSL    IO adapter
+          |                    Quic.Engine    TLS.ExSSL    IO adapter
           |                       |              |          |
           |                Wire / Protection   SSL.QUIC    OTP UDP
           |                       |                         or
@@ -21,9 +21,9 @@ Supplied / mirrored datagrams                 Application
           |                                                 |
           +--------------> SSL.Fingerprint <------ exact ClientHello bytes
 
-Abyss listener -> opt-in dispatch/admission -> QUIC.Endpoint / CID routes
+Abyss listener -> opt-in dispatch/admission -> Quic.Endpoint / CID routes
                                                |
-                                     persistent QUIC.Connection
+                                     persistent Quic.Connection
 ```
 
 ## Ownership
@@ -31,10 +31,10 @@ Abyss listener -> opt-in dispatch/admission -> QUIC.Endpoint / CID routes
 | Owner | State and responsibilities |
 |---|---|
 | `ex_ssl` | TLS authentication, transcript, fresh key exchange, traffic secrets, ClientHello serialization/observation and JA3/JA4 calculation |
-| `QUIC.Engine` | Transport state, packet-number spaces, streams, CRYPTO ranges, recovery, flow/congestion control, path/key lifecycle and typed effects |
-| `QUIC.Connection` | Sole current engine and TLS states, synchronous TLS calls, monotonic time, one next-deadline timer, operation/IO receipts and application ownership |
-| `QUIC.Endpoint` | Bounded admission, provisional and established CID routes, endpoint generation, accept queue and connection monitors; no private keys in route indexes |
-| `QUIC.Inspector` | Bounded observational reassembly and provenance; no handshake, transmit path or application decryption |
+| `Quic.Engine` | Transport state, packet-number spaces, streams, CRYPTO ranges, recovery, flow/congestion control, path/key lifecycle and typed effects |
+| `Quic.Connection` | Sole current engine and TLS states, synchronous TLS calls, monotonic time, one next-deadline timer, operation/IO receipts and application ownership |
+| `Quic.Endpoint` | Bounded admission, provisional and established CID routes, endpoint generation, accept queue and connection monitors; no private keys in route indexes |
+| `Quic.Inspector` | Bounded observational reassembly and provenance; no handshake, transmit path or application decryption |
 | Standalone IO / Abyss | Socket ownership, receive metadata, bounded egress, actual local-send result, shutdown |
 
 Dependency direction is `abyss -> ex_quic -> ex_ssl`. `ex_quic` never imports Abyss modules or relies on its structs. The standalone adapter and Abyss adapter implement the same external IO boundary. Do not introduce a native QUIC library as a hidden fallback.

@@ -1,8 +1,8 @@
 # M3 runtime evidence and remaining gates
 
-The standalone runtime uses `QUIC.Endpoint` for bounded CID admission/routing,
-`QUIC.Connection` as a temporary `:gen_statem` owning Scheduler/TLS state, and
-`QUIC.IO.GenUDP` as a separately owned send/receive capability. Closing a
+The standalone runtime uses `Quic.Endpoint` for bounded CID admission/routing,
+`Quic.Connection` as a temporary `:gen_statem` owning Scheduler/TLS state, and
+`Quic.IO.GenUDP` as a separately owned send/receive capability. Closing a
 connection does not close the shared socket. Concrete IPv4/IPv6 binds are
 required; wildcard binds and ancillary multihoming are unsupported.
 

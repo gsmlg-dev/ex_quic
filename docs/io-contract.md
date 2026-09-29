@@ -6,23 +6,23 @@ same connection engine and packet protection.
 
 ## Existing callable boundary
 
-`QUIC.Endpoint.start_link(role: :server, io: {:external, local, send_fun}, tls: opts)`
+`Quic.Endpoint.start_link(role: :server, io: {:external, local, send_fun}, tls: opts)`
 creates a server endpoint without owning a UDP socket. The public consumer variant is
-`QUIC.listen(io: {:external, local, send_fun}, tls: opts)`. External client
+`Quic.listen(io: {:external, local, send_fun}, tls: opts)`. External client
 endpoints are not supported in this phase. `local` is the local metadata
 reported by `Endpoint.local/1`. The external owner calls
 `Endpoint.receive_datagram(endpoint, {ip, port}, datagram, monotonic_microseconds)`
 synchronously. Each input is a complete UDP datagram, potentially containing
 multiple QUIC packets. It is not a stream chunk or a TLS message.
 
-The endpoint routes by destination CID to a persistent `QUIC.Connection`
+The endpoint routes by destination CID to a persistent `Quic.Connection`
 `:gen_statem`. Its generation is a reference, checked by `Connection.deliver/4`.
 Only the endpoint owner may deliver to that connection. Streams are data inside
 that connection, never separate processes. The owner must serialize ingress and
 apply credit before forwarding; unrestricted concurrent calls are not a bounded
 receive queue.
 
-`QUIC.IO` adapters implement `send(writer, bytes, remote)`, `close(writer)` and
+`Quic.IO` adapters implement `send(writer, bytes, remote)`, `close(writer)` and
 `monotonic_time/0`. A successful send returns `{:ok, completed_at}` in monotonic
 microseconds. An error returns `{:error, reason}`. These are local writer results,
 not peer acknowledgements.
@@ -38,13 +38,13 @@ packet numbers are never reused.
 The caller owns the shared socket. Stopping an external endpoint stops its
 restricted writer and connections; it does not close that socket. Writer and
 owner death terminate dependent connections. Standalone endpoints use
-`QUIC.IO.GenUDP` with one outstanding receive credit and a concrete bind address.
+`Quic.IO.GenUDP` with one outstanding receive credit and a concrete bind address.
 Wildcard/ancillary destination metadata and connection migration are unsupported.
 
 ## Accounting and lifecycle
 
-Pure `QUIC.IO.Endpoint` separates queue admission, dequeue, local completion and
-peer ACK (the latter belongs to `QUIC.Recovery`). Pending bytes reserve server
+Pure `Quic.IO.Endpoint` separates queue admission, dequeue, local completion and
+peer ACK (the latter belongs to `Quic.Recovery`). Pending bytes reserve server
 anti-amplification credit. Generation invalidation conservatively treats pending
 bytes as spent because a late completion might follow transmission. Queue items,
 bytes, connection count, routing records and handshake lifetimes are finite.

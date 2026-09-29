@@ -1,6 +1,6 @@
-defmodule QUIC.PeerCIDsTest do
+defmodule Quic.PeerCIDsTest do
   use ExUnit.Case, async: true
-  alias QUIC.PeerCIDs
+  alias Quic.PeerCIDs
 
   test "deduplicates consistent sequences, bounds active IDs, and rejects conflicts" do
     state = PeerCIDs.new("first")

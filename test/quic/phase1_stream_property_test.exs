@@ -1,6 +1,6 @@
-defmodule QUIC.Phase1StreamPropertyTest do
+defmodule Quic.Phase1StreamPropertyTest do
   use ExUnit.Case, async: true
-  alias QUIC.Streams
+  alias Quic.Streams
 
   test "seeded frame reorder, duplicates and different boundaries preserve one ordered byte stream" do
     :rand.seed(:exsss, {28, 9, 2026})

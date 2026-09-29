@@ -1,4 +1,4 @@
-defmodule QUIC.Recovery do
+defmodule Quic.Recovery do
   @moduledoc """
   Explicit-time QUIC packet-number spaces and loss recovery state.
 
@@ -8,7 +8,7 @@ defmodule QUIC.Recovery do
   pending acknowledgement and resolved when the receipt arrives.
   """
 
-  alias QUIC.Congestion.NewReno
+  alias Quic.Congestion.NewReno
 
   @spaces [:initial, :handshake, :application]
   @default_rtt 333_000

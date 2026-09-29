@@ -1,6 +1,6 @@
-defmodule QUIC.Phase1PacketizationTest do
+defmodule Quic.Phase1PacketizationTest do
   use ExUnit.Case, async: true
-  alias QUIC.{HandshakeScheduler, Recovery}
+  alias Quic.{HandshakeScheduler, Recovery}
 
   defmodule Recorded do
     def new(role, _) do

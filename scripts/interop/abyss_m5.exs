@@ -4,10 +4,10 @@ ex_quic_root = Path.expand("../..", __DIR__)
 for path <- Path.wildcard(Path.join(abyss_root, "_build/dev/lib/*/ebin")),
     do: Code.prepend_path(path)
 
-Code.ensure_loaded!(QUIC.AbyssDispatcher)
+Code.ensure_loaded!(Quic.AbyssDispatcher)
 {:ok, _} = Application.ensure_all_started(:telemetry)
 
-defmodule QUIC.AbyssM5Handler do
+defmodule Quic.AbyssM5Handler do
   use Abyss.Handler
 
   @impl true
@@ -36,26 +36,26 @@ client_tls = [
 
 {:ok, server} =
   Abyss.start_link(
-    handler_module: QUIC.AbyssM5Handler,
+    handler_module: Quic.AbyssM5Handler,
     port: 0,
     num_listeners: 1,
     transport_options: [ip: {127, 0, 0, 1}],
-    datagram_dispatcher: QUIC.AbyssDispatcher,
+    datagram_dispatcher: Quic.AbyssDispatcher,
     dispatcher_options: [tls: server_tls, streams: [delivery: :immediate], stream_observer: self()]
   )
 
 pool = Abyss.Server.listener_pool_pid(server)
 [listener] = Abyss.ListenerPool.listener_pids(pool)
 {:ok, address} = Abyss.Listener.listener_info_cached(listener)
-{:ok, client_one} = QUIC.Endpoint.start_link(role: :client, remote: address, tls: client_tls)
-{:ok, client_two} = QUIC.Endpoint.start_link(role: :client, remote: address, tls: client_tls)
+{:ok, client_one} = Quic.Endpoint.start_link(role: :client, remote: address, tls: client_tls)
+{:ok, client_two} = Quic.Endpoint.start_link(role: :client, remote: address, tls: client_tls)
 
 deadline = System.monotonic_time(:millisecond) + 12_000
 
 established? = fn endpoint ->
-  case QUIC.Endpoint.connections(endpoint) do
+  case Quic.Endpoint.connections(endpoint) do
     [%{pid: pid}] ->
-      status = QUIC.Connection.status(pid)
+      status = Quic.Connection.status(pid)
       status.phase == :established and status.quic_confirmed
 
     _ ->
@@ -85,19 +85,19 @@ first_pair =
   )
 
 if first_pair == :ok do
-  [%{pid: first_pid}] = QUIC.Endpoint.connections(client_one)
-  :ok = QUIC.Connection.close(first_pid)
+  [%{pid: first_pid}] = Quic.Endpoint.connections(client_one)
+  :ok = Quic.Connection.close(first_pid)
 end
 
 second_survives = wait_until.(wait_until, fn -> established?.(client_two) end, deadline)
 
 {stream_one, stream_two, stream_result} =
   if second_survives == :ok do
-    [%{pid: client_pid}] = QUIC.Endpoint.connections(client_two)
-    {:ok, stream_one} = QUIC.Connection.open_stream(client_pid, :bidi)
-    {:ok, stream_two} = QUIC.Connection.open_stream(client_pid, :bidi)
-    :ok = QUIC.Connection.send_stream(client_pid, stream_one, "stream-one", true)
-    :ok = QUIC.Connection.send_stream(client_pid, stream_two, "stream-two", true)
+    [%{pid: client_pid}] = Quic.Endpoint.connections(client_two)
+    {:ok, stream_one} = Quic.Connection.open_stream(client_pid, :bidi)
+    {:ok, stream_two} = Quic.Connection.open_stream(client_pid, :bidi)
+    :ok = Quic.Connection.send_stream(client_pid, stream_one, "stream-one", true)
+    :ok = Quic.Connection.send_stream(client_pid, stream_two, "stream-two", true)
 
     collect_streams = fn collect_streams, deadline, seen ->
       receive do
@@ -133,7 +133,7 @@ pool = Abyss.Server.listener_pool_pid(server)
 {:ok, restarted_address} = Abyss.Listener.listener_info_cached(restarted_listener)
 
 {:ok, client_three} =
-  QUIC.Endpoint.start_link(role: :client, remote: restarted_address, tls: client_tls)
+  Quic.Endpoint.start_link(role: :client, remote: restarted_address, tls: client_tls)
 
 third_ready = wait_until.(wait_until, fn -> established?.(client_three) end, deadline)
 

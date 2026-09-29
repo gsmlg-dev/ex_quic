@@ -13,8 +13,8 @@ end
 server_tls = [cert: [der.("leaf.pem")], key: {key_type, key}, alpn: ["ex-quic-test"]]
 ca = Path.join(fixture, "root.pem")
 
-{:ok, endpoint} = QUIC.Endpoint.start_link(role: :server, tls: server_tls, stream_observer: self())
-{{127, 0, 0, 1}, port} = QUIC.Endpoint.local(endpoint)
+{:ok, endpoint} = Quic.Endpoint.start_link(role: :server, tls: server_tls, stream_observer: self())
+{{127, 0, 0, 1}, port} = Quic.Endpoint.local(endpoint)
 
 peer =
   Port.open(
@@ -50,8 +50,8 @@ collect = fn collect, seen ->
 end
 
 streams = collect.(collect, %{})
-IO.inspect(QUIC.Endpoint.stats(endpoint), label: "STREAM_ENDPOINT_STATS")
-IO.inspect(QUIC.Endpoint.connections(endpoint), label: "STREAM_ENDPOINT_CONNECTIONS")
+IO.inspect(Quic.Endpoint.stats(endpoint), label: "STREAM_ENDPOINT_STATS")
+IO.inspect(Quic.Endpoint.connections(endpoint), label: "STREAM_ENDPOINT_CONNECTIONS")
 expected = MapSet.new(["independent-stream-one", "independent-stream-two"])
 
 received =

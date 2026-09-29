@@ -1,7 +1,7 @@
-defmodule QUIC.ExternalEndpointTest do
+defmodule Quic.ExternalEndpointTest do
   use ExUnit.Case, async: true
 
-  alias QUIC.{Endpoint, HandshakeScheduler}
+  alias Quic.{Endpoint, HandshakeScheduler}
 
   defmodule RecordedTLS do
     def new(:client, _), do: {:ok, :client, [{:emit, :initial, <<1, 2>>}]}
@@ -46,18 +46,18 @@ defmodule QUIC.ExternalEndpointTest do
 
   test "external writer preserves callback errors" do
     {:ok, writer} =
-      QUIC.IO.ExternalWriter.start_link(
+      Quic.IO.ExternalWriter.start_link(
         owner: self(),
         send_fun: fn _remote, _bytes -> {:error, :closed} end
       )
 
     on_exit(fn -> if Process.alive?(writer), do: GenServer.stop(writer) end)
-    assert {:error, :closed} = QUIC.IO.ExternalWriter.send(writer, <<1>>, {{127, 0, 0, 1}, 1})
+    assert {:error, :closed} = Quic.IO.ExternalWriter.send(writer, <<1>>, {{127, 0, 0, 1}, 1})
   end
 
   test "external writer does not treat an admission reference as local success" do
     {:ok, writer} =
-      QUIC.IO.ExternalWriter.start_link(
+      Quic.IO.ExternalWriter.start_link(
         owner: self(),
         send_fun: fn _remote, _bytes -> {:ok, make_ref()} end
       )
@@ -65,7 +65,7 @@ defmodule QUIC.ExternalEndpointTest do
     on_exit(fn -> if Process.alive?(writer), do: GenServer.stop(writer) end)
 
     assert {:error, {:invalid_send_result, {:ok, _}}} =
-             QUIC.IO.ExternalWriter.send(writer, <<1>>, {{127, 0, 0, 1}, 1})
+             Quic.IO.ExternalWriter.send(writer, <<1>>, {{127, 0, 0, 1}, 1})
   end
 
   test "Abyss callback adapter owns the QUIC endpoint and uses injected egress" do
@@ -78,12 +78,12 @@ defmodule QUIC.ExternalEndpointTest do
     end
 
     {:ok, state} =
-      QUIC.AbyssDispatcher.init(
+      Quic.AbyssDispatcher.init(
         %{local_info: {{127, 0, 0, 1}, 45_003}, send_fun: send_fun},
         tls: [adapter: RecordedTLS]
       )
 
-    on_exit(fn -> QUIC.AbyssDispatcher.terminate(:normal, state) end)
+    on_exit(fn -> Quic.AbyssDispatcher.terminate(:normal, state) end)
 
     {:ok, _client, [initial]} =
       HandshakeScheduler.new(:client,
@@ -93,7 +93,7 @@ defmodule QUIC.ExternalEndpointTest do
       )
 
     assert {:ok, _} =
-             QUIC.AbyssDispatcher.handle_datagram(
+             Quic.AbyssDispatcher.handle_datagram(
                remote,
                initial.bytes,
                200,

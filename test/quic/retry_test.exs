@@ -1,6 +1,6 @@
-defmodule QUIC.RetryTest do
+defmodule Quic.RetryTest do
   use ExUnit.Case, async: true
-  alias QUIC.Retry
+  alias Quic.Retry
 
   @key :binary.copy(<<42>>, 32)
   @remote {{127, 0, 0, 1}, 44300}

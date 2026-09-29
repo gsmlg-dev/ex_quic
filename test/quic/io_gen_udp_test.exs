@@ -1,7 +1,7 @@
-defmodule QUIC.IO.GenUDPTest do
+defmodule Quic.IO.GenUDPTest do
   use ExUnit.Case, async: true
 
-  alias QUIC.IO.GenUDP
+  alias Quic.IO.GenUDP
 
   test "loopback reports local completion and requires consumption credit" do
     {:ok, receiver} = GenUDP.open(ip: {127, 0, 0, 1}, role: :server)

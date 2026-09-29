@@ -1,7 +1,7 @@
-defmodule QUIC.ProfileTest do
+defmodule Quic.ProfileTest do
   use ExUnit.Case, async: true
 
-  alias QUIC.Profile
+  alias Quic.Profile
 
   test "built-in profiles are legal and distinguishable policy" do
     assert {:ok, ordered} = Profile.compile(:ordered)

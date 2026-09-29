@@ -1,4 +1,4 @@
-defmodule QUIC.Runtime do
+defmodule Quic.Runtime do
   @moduledoc """
   Small data contracts separating pure transitions from runtime IO.
   """
@@ -42,7 +42,7 @@ defmodule QUIC.Runtime do
   defmodule StreamHandle do
     @enforce_keys [:connection, :id]
     defstruct [:connection, :id]
-    @type t :: %__MODULE__{connection: QUIC.Runtime.ConnectionHandle.t(), id: non_neg_integer()}
+    @type t :: %__MODULE__{connection: Quic.Runtime.ConnectionHandle.t(), id: non_neg_integer()}
   end
 
   defmodule VirtualClock do
@@ -60,7 +60,7 @@ defmodule QUIC.Runtime do
     @moduledoc """
     Legacy behaviour for externally owned sockets and deterministic tests.
     Successful sends return actual completion time in monotonic microseconds,
-    matching `QUIC.IO`.
+    matching `Quic.IO`.
     """
     @callback send(term(), binary(), term()) :: {:ok, integer()} | {:error, term()}
     @callback monotonic_time() :: integer()

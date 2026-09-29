@@ -1,4 +1,4 @@
-defmodule ExQuic.ExSSLContractTest do
+defmodule Quic.ExSSLContractTest do
   use ExUnit.Case, async: true
 
   @client_options [

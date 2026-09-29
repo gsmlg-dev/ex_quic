@@ -1,4 +1,4 @@
-defmodule QUIC.TLSDriverTest do
+defmodule Quic.TLSDriverTest do
   use ExUnit.Case, async: true
 
   defmodule RecordedTLS do
@@ -44,79 +44,79 @@ defmodule QUIC.TLSDriverTest do
 
   test "reassembles fragments and folds each contiguous TLS feed once" do
     assert {:ok, state, [{:emit, :initial, <<1, 2>>}]} =
-             QUIC.TLSDriver.new(:client, adapter: RecordedTLS)
+             Quic.TLSDriver.new(:client, adapter: RecordedTLS)
 
-    assert {:ok, state, []} = QUIC.TLSDriver.feed(state, :initial, 1, <<2>>)
+    assert {:ok, state, []} = Quic.TLSDriver.feed(state, :initial, 1, <<2>>)
 
     assert {:ok, state, [{:emit, :handshake, <<3, 4>>}]} =
-             QUIC.TLSDriver.feed(state, :initial, 0, <<1>>)
+             Quic.TLSDriver.feed(state, :initial, 0, <<1>>)
 
-    assert {:ok, state, []} = QUIC.TLSDriver.feed(state, :handshake, 1, <<4>>)
-    assert {:ok, state, effects} = QUIC.TLSDriver.feed(state, :handshake, 0, <<3>>)
+    assert {:ok, state, []} = Quic.TLSDriver.feed(state, :handshake, 1, <<4>>)
+    assert {:ok, state, effects} = Quic.TLSDriver.feed(state, :handshake, 0, <<3>>)
     assert :handshake_complete in effects
-    assert QUIC.TLSDriver.facts(state).tls_complete
-    assert {:ok, <<4>>} = QUIC.TLSDriver.retransmit(state, :handshake, 1, 1)
+    assert Quic.TLSDriver.facts(state).tls_complete
+    assert {:ok, <<4>>} = Quic.TLSDriver.retransmit(state, :handshake, 1, 1)
   end
 
   test "future levels buffer and old duplicate bytes are ignored" do
-    assert {:ok, state, _} = QUIC.TLSDriver.new(:client, adapter: RecordedTLS)
-    assert {:ok, state, []} = QUIC.TLSDriver.feed(state, :handshake, 0, <<3, 4>>)
-    assert {:ok, state, effects} = QUIC.TLSDriver.feed(state, :initial, 0, <<1, 2>>)
+    assert {:ok, state, _} = Quic.TLSDriver.new(:client, adapter: RecordedTLS)
+    assert {:ok, state, []} = Quic.TLSDriver.feed(state, :handshake, 0, <<3, 4>>)
+    assert {:ok, state, effects} = Quic.TLSDriver.feed(state, :initial, 0, <<1, 2>>)
     assert :handshake_complete in effects
-    assert {:ok, state, []} = QUIC.TLSDriver.feed(state, :initial, 0, <<1, 2>>)
-    assert {:ok, _state, _} = QUIC.TLSDriver.feed(state, :handshake, 0, <<3, 4>>)
+    assert {:ok, state, []} = Quic.TLSDriver.feed(state, :initial, 0, <<1, 2>>)
+    assert {:ok, _state, _} = Quic.TLSDriver.feed(state, :handshake, 0, <<3, 4>>)
   end
 
   test "future-level pending bytes use an aggregate bound" do
     assert {:ok, state, [{:emit, :initial, <<1, 2>>}]} =
-             QUIC.TLSDriver.new(
+             Quic.TLSDriver.new(
                :client,
                adapter: RecordedTLS,
                max_crypto_bytes: 2,
                max_emitted_bytes: 10
              )
 
-    assert {:ok, state, []} = QUIC.TLSDriver.feed(state, :handshake, 0, <<3, 4>>)
+    assert {:ok, state, []} = Quic.TLSDriver.feed(state, :handshake, 0, <<3, 4>>)
 
     assert {:error, %{kind: :quic, reason: :future_crypto_buffer_limit}, ^state, []} =
-             QUIC.TLSDriver.feed(state, :application, 0, <<5>>)
+             Quic.TLSDriver.feed(state, :application, 0, <<5>>)
   end
 
   test "conflicting overlap and sparse limits are explicit" do
-    state = QUIC.CryptoReassembly.new(max_bytes: 4, max_intervals: 1)
-    assert {:ok, state, <<>>} = QUIC.CryptoReassembly.put(state, 4, <<1>>)
-    assert {:error, :conflicting_overlap} = QUIC.CryptoReassembly.put(state, 4, <<2>>)
-    assert {:error, :crypto_buffer_limit} = QUIC.CryptoReassembly.put(state, 0, <<1, 2, 3, 4>>)
+    state = Quic.CryptoReassembly.new(max_bytes: 4, max_intervals: 1)
+    assert {:ok, state, <<>>} = Quic.CryptoReassembly.put(state, 4, <<1>>)
+    assert {:error, :conflicting_overlap} = Quic.CryptoReassembly.put(state, 4, <<2>>)
+    assert {:error, :crypto_buffer_limit} = Quic.CryptoReassembly.put(state, 0, <<1, 2, 3, 4>>)
   end
 
   test "fatal TLS result is terminal and does not invent actions" do
-    assert {:ok, state, _} = QUIC.TLSDriver.new(:client, adapter: RecordedTLS)
+    assert {:ok, state, _} = Quic.TLSDriver.new(:client, adapter: RecordedTLS)
 
     assert {:error, %{kind: :tls, reason: :recorded_failure}, failed, [{:error, _}]} =
-             QUIC.TLSDriver.feed(state, :initial, 0, <<255>>)
+             Quic.TLSDriver.feed(state, :initial, 0, <<255>>)
 
     assert {:error, %{kind: :closed, reason: :terminal}, ^failed, []} =
-             QUIC.TLSDriver.feed(failed, :initial, 0, <<>>)
+             Quic.TLSDriver.feed(failed, :initial, 0, <<>>)
 
-    assert ^failed = QUIC.TLSDriver.abort(failed, :again)
+    assert ^failed = Quic.TLSDriver.abort(failed, :again)
   end
 
   test "a corrupted Finished is terminal and emits no replacement flight" do
-    assert {:ok, state, _} = QUIC.TLSDriver.new(:client, adapter: RecordedTLS)
-    assert {:ok, state, _} = QUIC.TLSDriver.feed(state, :initial, 0, <<1, 2>>)
+    assert {:ok, state, _} = Quic.TLSDriver.new(:client, adapter: RecordedTLS)
+    assert {:ok, state, _} = Quic.TLSDriver.feed(state, :initial, 0, <<1, 2>>)
 
     assert {:error, %{reason: :corrupted_finished}, failed, []} =
-             QUIC.TLSDriver.feed(state, :handshake, 0, <<254>>)
+             Quic.TLSDriver.feed(state, :handshake, 0, <<254>>)
 
     assert failed.terminal == :failed
 
     assert {:error, %{kind: :closed, reason: :terminal}, ^failed, []} =
-             QUIC.TLSDriver.feed(failed, :handshake, 1, <<>>)
+             Quic.TLSDriver.feed(failed, :handshake, 1, <<>>)
   end
 
   test "retained TLS output has an explicit aggregate budget" do
     assert {:error, %{kind: :quic, reason: :tls_output_limit}} =
-             QUIC.TLSDriver.new(:client, adapter: RecordedTLS, max_emitted_bytes: 1)
+             Quic.TLSDriver.new(:client, adapter: RecordedTLS, max_emitted_bytes: 1)
   end
 
   test "default adapter uses the pinned public SSL.QUIC API" do
@@ -127,8 +127,8 @@ defmodule QUIC.TLSDriverTest do
       transport_parameters: <<>>
     ]
 
-    assert {:ok, state, [{:emit, :initial, hello}]} = QUIC.TLSDriver.new(:client, options)
+    assert {:ok, state, [{:emit, :initial, hello}]} = Quic.TLSDriver.new(:client, options)
     assert <<1, _::binary>> = hello
-    assert QUIC.TLSDriver.info(state).receive_level == :initial
+    assert Quic.TLSDriver.info(state).receive_level == :initial
   end
 end

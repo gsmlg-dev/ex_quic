@@ -1,4 +1,4 @@
-defmodule QUIC.IO.ExternalWriter do
+defmodule Quic.IO.ExternalWriter do
   @moduledoc """
   Bounded integration writer backed by a caller-owned send function.
 
@@ -9,7 +9,7 @@ defmodule QUIC.IO.ExternalWriter do
   """
   use GenServer
 
-  @behaviour QUIC.IO
+  @behaviour Quic.IO
 
   def start_link(opts) when is_list(opts), do: GenServer.start_link(__MODULE__, opts)
 

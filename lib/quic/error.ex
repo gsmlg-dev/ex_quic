@@ -1,4 +1,4 @@
-defmodule QUIC.Error do
+defmodule Quic.Error do
   @moduledoc """
   Typed error categories used at QUIC runtime boundaries.
   """

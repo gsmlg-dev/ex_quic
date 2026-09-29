@@ -11,8 +11,8 @@ end
   :public_key.pem_decode(File.read!(Path.join(fixture, "leaf-key.pem")))
 
 tls = [cert: [der.("leaf.pem")], key: {key_type, key}, alpn: ["ex-quic-test"]]
-{:ok, endpoint} = QUIC.Endpoint.start_link(role: :server, tls: tls)
-{{127, 0, 0, 1}, port} = QUIC.Endpoint.local(endpoint)
+{:ok, endpoint} = Quic.Endpoint.start_link(role: :server, tls: tls)
+{{127, 0, 0, 1}, port} = Quic.Endpoint.local(endpoint)
 {:ok, socket} = :gen_udp.open(0, [:binary, {:active, false}, {:ip, {127, 0, 0, 1}}])
 
 dcid = :binary.copy(<<1>>, 8)
@@ -20,7 +20,7 @@ scid = :binary.copy(<<2>>, 8)
 
 initial = fn first ->
   payload = :binary.copy(<<0>>, 1_025)
-  {:ok, length} = QUIC.Codec.encode_varint(byte_size(payload) + 1)
+  {:ok, length} = Quic.Codec.encode_varint(byte_size(payload) + 1)
   <<first, 0, 0, 0, 1, 8, dcid::binary, 8, scid::binary, 0, length::binary, 0, payload::binary>>
 end
 
@@ -39,7 +39,7 @@ responses =
     end
   end)
 
-result = %{responses: Enum.reverse(responses), stats: QUIC.Endpoint.stats(endpoint)}
+result = %{responses: Enum.reverse(responses), stats: Quic.Endpoint.stats(endpoint)}
 IO.inspect(result, label: "RAW_NEGATIVE_RESULT")
 :gen_udp.close(socket)
 GenServer.stop(endpoint)

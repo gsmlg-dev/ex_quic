@@ -1,4 +1,4 @@
-defmodule QUIC.Codec do
+defmodule Quic.Codec do
   @moduledoc """
   Bounded QUIC v1 wire helpers.
   """

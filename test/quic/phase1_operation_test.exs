@@ -1,7 +1,7 @@
-defmodule QUIC.Phase1OperationTest do
+defmodule Quic.Phase1OperationTest do
   use ExUnit.Case, async: true
 
-  alias QUIC.Connection
+  alias Quic.Connection
 
   defmodule TLS do
     def new(_, _), do: {:ok, 0, [{:emit, :initial, <<1, 2>>}]}

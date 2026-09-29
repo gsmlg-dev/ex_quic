@@ -1,4 +1,4 @@
-defmodule QUIC.Connection do
+defmodule Quic.Connection do
   @moduledoc """
   Temporary serialized QUIC connection runtime using an externally owned IO capability.
 
@@ -7,13 +7,13 @@ defmodule QUIC.Connection do
   A connection never closes the shared socket. The IO capability's `send/3`
   must return a local completion timestamp or a bounded failure.
 
-  Public consumers use the generation handles and pull operations in `QUIC`.
+  Public consumers use the generation handles and pull operations in `Quic`.
   See `docs/consumer-contract.md` for readiness, admission outcomes and limits.
   """
   @behaviour :gen_statem
-  alias QUIC.{HandshakeScheduler, TLSDriver, TransportParameters, Recovery}
-  alias QUIC.IO.Endpoint
-  alias QUIC.Runtime.{ConnectionHandle, StreamHandle}
+  alias Quic.{HandshakeScheduler, TLSDriver, TransportParameters, Recovery}
+  alias Quic.IO.Endpoint
+  alias Quic.Runtime.{ConnectionHandle, StreamHandle}
 
   def start_link(opts) do
     :gen_statem.start_link(__MODULE__, Keyword.put_new(opts, :owner, self()), [])

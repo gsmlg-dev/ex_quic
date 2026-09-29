@@ -1,6 +1,6 @@
-defmodule QUIC.Profile do
+defmodule Quic.Profile do
   @moduledoc """
-  Capability-checked client wire policy for QUIC.
+  Capability-checked client wire policy for Quic.
 
   A profile contains ordered policy only. `SSL.ClientHello.Materializer` keeps
   the ClientHello random and key shares fresh for every materialization.

@@ -1,6 +1,6 @@
-defmodule QUIC.KeyRetirementTest do
+defmodule Quic.KeyRetirementTest do
   use ExUnit.Case, async: true
-  alias QUIC.{Recovery, TLSDriver, HandshakeScheduler}
+  alias Quic.{Recovery, TLSDriver, HandshakeScheduler}
 
   defmodule Recorded do
     def new(role, _) do
@@ -237,7 +237,7 @@ defmodule QUIC.KeyRetirementTest do
 
     scid = <<9, 10, 11, 12>>
     body = <<0xF0, 1::32, byte_size(client.scid), client.scid::binary, 4, scid::binary, 42>>
-    {:ok, tag} = QUIC.Protection.retry_tag(client.original_dcid, body)
+    {:ok, tag} = Quic.Protection.retry_tag(client.original_dcid, body)
 
     assert {:error, :unexpected_retry, ^client} =
              HandshakeScheduler.receive_datagram(client, body <> tag, 1)
@@ -261,8 +261,8 @@ defmodule QUIC.KeyRetirementTest do
     old_timer = recovery.timer_generation
     server = %{server | recovery: recovery}
     retired = HandshakeScheduler.retire_level(server, :initial)
-    {:ok, budget} = QUIC.IO.Endpoint.new()
-    {:ok, budget} = QUIC.IO.Endpoint.validate_address(budget)
+    {:ok, budget} = Quic.IO.Endpoint.new()
+    {:ok, budget} = Quic.IO.Endpoint.validate_address(budget)
     generation = make_ref()
 
     data = %{
@@ -282,7 +282,7 @@ defmodule QUIC.KeyRetirementTest do
     }
 
     assert :keep_state_and_data =
-             QUIC.Connection.handle_event(
+             Quic.Connection.handle_event(
                {:timeout, :recovery},
                {generation, old_timer},
                :handshaking,
@@ -311,7 +311,7 @@ defmodule QUIC.KeyRetirementTest do
     }
 
     assert {:keep_state, next, _} =
-             QUIC.Connection.handle_event(
+             Quic.Connection.handle_event(
                {:timeout, :recovery},
                {generation, recovery.timer_generation},
                :handshaking,

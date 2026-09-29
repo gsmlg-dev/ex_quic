@@ -1,4 +1,4 @@
-defmodule QUIC.Protection do
+defmodule Quic.Protection do
   @moduledoc """
   QUIC v1 Initial packet protection primitives.
   """

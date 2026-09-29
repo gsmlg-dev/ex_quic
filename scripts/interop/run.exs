@@ -1,6 +1,6 @@
 # Run with: mix run scripts/interop/run.exs client|server [output-directory]
-defmodule QUIC.Interop.Run do
-  alias QUIC.{Endpoint, Connection}
+defmodule Quic.Interop.Run do
+  alias Quic.{Endpoint, Connection}
 
   def run(mode, directory) do
     scenario = System.get_env("INTEROP_SCENARIO", "baseline")
@@ -12,7 +12,7 @@ defmodule QUIC.Interop.Run do
           nil
 
         name when name in ["ordered", "compact"] ->
-          {:ok, compiled} = QUIC.Profile.compile(String.to_existing_atom(name))
+          {:ok, compiled} = Quic.Profile.compile(String.to_existing_atom(name))
           compiled
 
         other ->
@@ -319,7 +319,7 @@ end
 
 case System.argv() do
   [mode | rest] when mode in ["client", "server"] ->
-    QUIC.Interop.Run.run(mode, List.first(rest) || "_build/interop/#{mode}")
+    Quic.Interop.Run.run(mode, List.first(rest) || "_build/interop/#{mode}")
 
   _ ->
     raise("usage: mix run scripts/interop/run.exs client|server [output-directory]")

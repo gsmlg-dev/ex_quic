@@ -1,4 +1,4 @@
-defmodule QUIC.Streams do
+defmodule Quic.Streams do
   @moduledoc """
   Connection-owned QUIC stream state.
 

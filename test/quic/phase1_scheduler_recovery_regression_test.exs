@@ -1,7 +1,7 @@
-defmodule QUIC.Phase1SchedulerRecoveryRegressionTest do
+defmodule Quic.Phase1SchedulerRecoveryRegressionTest do
   use ExUnit.Case, async: true
 
-  alias QUIC.{HandshakeScheduler, Recovery}
+  alias Quic.{HandshakeScheduler, Recovery}
 
   defmodule InitialTLS do
     def new(_, _), do: {:ok, :tls, [{:emit, :initial, <<1, 2, 3>>}]}
@@ -57,7 +57,7 @@ defmodule QUIC.Phase1SchedulerRecoveryRegressionTest do
     recovery = state.recovery
 
     assert {:ok, ^recovery, []} =
-             QUIC.Recovery.local_send(recovery, :initial, first.packet_number, :ok, 1)
+             Quic.Recovery.local_send(recovery, :initial, first.packet_number, :ok, 1)
   end
 
   test "a fatal suffix does not strand a queued prefix reservation" do

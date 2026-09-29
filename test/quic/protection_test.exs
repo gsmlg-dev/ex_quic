@@ -1,4 +1,4 @@
-defmodule QUIC.ProtectionTest do
+defmodule Quic.ProtectionTest do
   use ExUnit.Case, async: true
   import Bitwise
 
@@ -12,7 +12,7 @@ defmodule QUIC.ProtectionTest do
         case: :lower
       )
 
-    assert :ok = QUIC.Protection.validate_retry(original, packet)
+    assert :ok = Quic.Protection.validate_retry(original, packet)
   end
 
   test "ChaCha header protection matches the RFC 8439 section 2.3.2 block" do
@@ -21,7 +21,7 @@ defmodule QUIC.ProtectionTest do
     sample = <<1::little-32, nonce::binary>>
 
     assert {:ok, <<0x10, 0xF1, 0xE7, 0xE4, 0xD1>>} =
-             QUIC.Protection.header_protection_mask(key, sample, :chacha20_poly1305)
+             Quic.Protection.header_protection_mask(key, sample, :chacha20_poly1305)
   end
 
   test "packet AEAD uses the installed algorithm for every supported TLS suite" do
@@ -35,10 +35,10 @@ defmodule QUIC.ProtectionTest do
       expected = cipher <> tag
 
       assert {:ok, ^expected} =
-               QUIC.Protection.aead_encrypt(key, iv, 42, "header", "QUIC", algorithm)
+               Quic.Protection.aead_encrypt(key, iv, 42, "header", "QUIC", algorithm)
 
       assert {:ok, "QUIC"} =
-               QUIC.Protection.aead_decrypt(key, iv, 42, "header", expected, algorithm)
+               Quic.Protection.aead_decrypt(key, iv, 42, "header", expected, algorithm)
     end
   end
 
@@ -50,11 +50,11 @@ defmodule QUIC.ProtectionTest do
     expected = <<0x40, 1, 2, 3, 4, 0, 0, 0, 0, sample::binary>>
 
     assert {:ok, ^expected, 1} =
-             QUIC.Protection.remove_header_protection(protected, 5, <<0::128>>, :aes_128_gcm)
+             Quic.Protection.remove_header_protection(protected, 5, <<0::128>>, :aes_128_gcm)
   end
 
   test "RFC 9001 Initial client vectors" do
-    assert {:ok, keys} = QUIC.Protection.initial_secrets(@dcid, :client)
+    assert {:ok, keys} = Quic.Protection.initial_secrets(@dcid, :client)
 
     assert Base.encode16(keys.secret, case: :lower) ==
              "c00cf151ca5be075ed0ebfb5c80323c42d6b7db67881289af4008f1f6c357aea"
@@ -65,19 +65,19 @@ defmodule QUIC.ProtectionTest do
   end
 
   test "AES-GCM packet protection round trips and rejects a bad tag" do
-    assert {:ok, keys} = QUIC.Protection.initial_secrets(@dcid, :client)
+    assert {:ok, keys} = Quic.Protection.initial_secrets(@dcid, :client)
 
     assert {:ok, ciphertext} =
-             QUIC.Protection.aead_encrypt(keys.key, keys.iv, 0, <<1, 2>>, "payload")
+             Quic.Protection.aead_encrypt(keys.key, keys.iv, 0, <<1, 2>>, "payload")
 
     assert {:ok, "payload"} =
-             QUIC.Protection.aead_decrypt(keys.key, keys.iv, 0, <<1, 2>>, ciphertext)
+             Quic.Protection.aead_decrypt(keys.key, keys.iv, 0, <<1, 2>>, ciphertext)
 
     head = binary_part(ciphertext, 0, byte_size(ciphertext) - 1)
     last = :binary.last(ciphertext)
 
     assert {:error, :bad_tag} =
-             QUIC.Protection.aead_decrypt(
+             Quic.Protection.aead_decrypt(
                keys.key,
                keys.iv,
                0,
@@ -88,13 +88,13 @@ defmodule QUIC.ProtectionTest do
 
   test "header protection requires a full sample and Retry tags are deterministic" do
     assert {:error, :short_sample} =
-             QUIC.Protection.header_protection_mask(<<0::128>>, <<0::64>>, :aes_128_gcm)
+             Quic.Protection.header_protection_mask(<<0::128>>, <<0::64>>, :aes_128_gcm)
 
-    assert {:ok, tag} = QUIC.Protection.retry_tag(<<1, 2, 3>>, <<4, 5, 6>>)
+    assert {:ok, tag} = Quic.Protection.retry_tag(<<1, 2, 3>>, <<4, 5, 6>>)
     assert byte_size(tag) == 16
-    assert :ok == QUIC.Protection.validate_retry(<<1, 2, 3>>, <<4, 5, 6, tag::binary>>)
+    assert :ok == Quic.Protection.validate_retry(<<1, 2, 3>>, <<4, 5, 6, tag::binary>>)
 
     assert {:error, :invalid_retry_tag} =
-             QUIC.Protection.validate_retry(<<1, 2, 3>>, <<4, 5, 6, 0::128>>)
+             Quic.Protection.validate_retry(<<1, 2, 3>>, <<4, 5, 6, 0::128>>)
   end
 end

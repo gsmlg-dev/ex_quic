@@ -161,7 +161,7 @@ External callback: 9094 successful sends, 2414101 bytes; fixture cleanup passed.
 
 ## Handoff and remaining boundaries
 
-Public entry points are `QUIC.listen/1`, `client/1`, `local/1`, `connect/3`,
+Public entry points are `Quic.listen/1`, `client/1`, `local/1`, `connect/3`,
 `accept/2`, `attach/3`, `ready/1`, `info/1`, `events/3`, `open_stream/3`,
 `send_stream/4`, `read/3`, `reset_stream/3`, `stop_stream/3`, `close/4`,
 `operation_status/2`, and `capabilities/0`, including documented default arities.
@@ -230,7 +230,9 @@ not the downstream joint reproduction.
 ## Hex publication migration (2026-09-29)
 
 The OTP application and Hex package are now `elixir_quic` / `:elixir_quic`;
-all existing library modules, including the public `QUIC` API, are unchanged.
+the public namespace is renamed from `QUIC` / `QUIC.*` to `Quic` / `Quic.*`.
+Function names and arguments are unchanged; consumers must update their aliases
+and module references. The unused `ExQuic` placeholder module is removed.
 The repository remains `gsmlg-dev/ex_quic`. The project is MIT licensed;
 repository-owned test credentials retain their upstream Apache-2.0 attribution
 and are excluded from the package. Existing source-only release tags are unchanged.
@@ -260,6 +262,12 @@ an existing package's checksum before treating it as already published.
 
 An isolated consumer of the unpacked package resolved `ex_ssl 0.7.2` from Hex,
 compiled with warnings as errors, and started a real production release with
-`:elixir_quic`, `:ex_ssl` and `:public_key`, without OTP `:ssl`. The public `QUIC`
+`:elixir_quic`, `:ex_ssl` and `:public_key`, without OTP `:ssl`. The public `Quic`
 module and release check passed; the daemon was stopped afterward. This uses a
 clean release rather than a Mix process, since Mix/Hex itself can start OTP `:ssl`.
+
+After the explicit `Quic` namespace rename, strict compilation, formatting and
+all 211 tests passed again (seed `28092026`). The package was rebuilt and unpacked
+from renamed source. Existing impaired client/server/external-server network
+checks all passed with cleanup and zero retained routes. No compatibility aliases
+with Ex/Elixir prefixes or the old all-uppercase module namespace are shipped.

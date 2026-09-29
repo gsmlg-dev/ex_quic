@@ -5,7 +5,7 @@ endpoint and dependency-free adapter are at `ex_quic@9a0308e`.
 
 The real UDP smoke command and its scope are recorded here. It uses a concrete
 loopback bind, keeps Abyss as the shared socket owner, routes through the
-external `QUIC.Endpoint`, and sends through the dispatcher writer.
+external `Quic.Endpoint`, and sends through the dispatcher writer.
 
 ```sh
 ABYSS_CHECKOUT=/Users/gao/Workspace/gsmlg-dev/ex_quic/.trees/abyss-m5 \

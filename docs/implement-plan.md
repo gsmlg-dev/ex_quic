@@ -5,7 +5,7 @@ Supersedes the v1 client-only plan and the v2 plan that treated the ex_ssl inter
 
 ## 1. Decision and starting point
 
-Proceed with an independent Mix library: package/application `elixir_quic` / `:elixir_quic` (repository `ex_quic`; renamed for Hex publication on 2026-09-29), public namespace `QUIC`. Its three required deliverables are **Initial/ClientHello fingerprint observation**, **profile-controlled client behavior**, and **QUIC server integration in Abyss**. Neither observation alone nor a standalone client satisfies the complete project.
+Proceed with an independent Mix library: package/application `elixir_quic` / `:elixir_quic` (repository `ex_quic`; renamed for Hex publication on 2026-09-29), public namespace `Quic`. Its three required deliverables are **Initial/ClientHello fingerprint observation**, **profile-controlled client behavior**, and **QUIC server integration in Abyss**. Neither observation alone nor a standalone client satisfies the complete project.
 
 The reviewed TLS dependency is `gsmlg-dev/ex_ssl` at `02eb981f59d4e182d4473e264a9f8b093ec6bf3d`, GitHub release v0.7.1. The previous R1–R3 protocol-boundary findings and F1 formatter finding are closed within the incremental review scope. Use the actual `SSL.QUIC` and `SSL.Fingerprint` contracts rather than a new TLS proposal. See [review](ex-ssl-review.md), [contract](ex-ssl-quic-contract.md), and [sources](sources.md), R1–R4.
 
@@ -61,7 +61,7 @@ M2 and M3 can progress in parallel after M1. The Abyss dispatch design and gener
 
 ## 6. M2 — the first useful product: Initial fingerprint observation
 
-**M2.1 — inspector state.** Build `QUIC.Inspector` using the M1 codecs, Initial protection and a bounded CRYPTO interval store. Track flow provenance, direction, version, Initial key context, packet-number reconstruction and expiry. Support fragmented/overlapping/reordered/duplicate CRYPTO data without delivering a byte twice. Count intervals and contexts as well as byte totals; sparse offsets must not allocate dense buffers.
+**M2.1 — inspector state.** Build `Quic.Inspector` using the M1 codecs, Initial protection and a bounded CRYPTO interval store. Track flow provenance, direction, version, Initial key context, packet-number reconstruction and expiry. Support fragmented/overlapping/reordered/duplicate CRYPTO data without delivering a byte twice. Count intervals and contexts as well as byte totals; sparse offsets must not allocate dense buffers.
 
 **M2.2 — upstream observation.** Extract one complete ClientHello, including its handshake header, and call `SSL.Fingerprint.client_hello(bytes, :quic)`. Its streaming observer is for one hello, not an entire CRYPTO stream with subsequent messages. Separate ClientHello1 and a post-HRR ClientHello2 when both are observed. A QUIC Retry can retransmit the same TLS bytes under a changed Initial key context; it is not TLS HRR.
 

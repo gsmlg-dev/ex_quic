@@ -1,4 +1,4 @@
-defmodule QUIC.IO.GenUDP do
+defmodule Quic.IO.GenUDP do
   @moduledoc """
   Standalone UDP socket capability with one outstanding receive credit.
 
@@ -12,7 +12,7 @@ defmodule QUIC.IO.GenUDP do
   never peer acknowledgement. Times use monotonic microseconds.
   """
   use GenServer
-  @behaviour QUIC.IO
+  @behaviour Quic.IO
 
   defstruct [:socket, :owner, :owner_monitor, :generation, :local, :role, :credit]
 

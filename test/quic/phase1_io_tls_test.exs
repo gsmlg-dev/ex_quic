@@ -1,6 +1,6 @@
-defmodule QUIC.Phase1IOTLSTest do
+defmodule Quic.Phase1IOTLSTest do
   use ExUnit.Case, async: true
-  alias QUIC.{Endpoint, HandshakeScheduler}
+  alias Quic.{Endpoint, HandshakeScheduler}
 
   defmodule Recorded do
     def new(role, _) do

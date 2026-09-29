@@ -1,7 +1,7 @@
-defmodule QUIC.Phase1APIRegressionTest do
+defmodule Quic.Phase1APIRegressionTest do
   use ExUnit.Case, async: true
 
-  alias QUIC.Runtime.{ConnectionHandle, StreamHandle}
+  alias Quic.Runtime.{ConnectionHandle, StreamHandle}
 
   test "public query calls return closed instead of exiting for a retired handle" do
     pid = spawn(fn -> :ok end)
@@ -10,11 +10,11 @@ defmodule QUIC.Phase1APIRegressionTest do
     handle = %ConnectionHandle{id: pid, generation: make_ref()}
     stream = %StreamHandle{connection: handle, id: 0}
 
-    assert {:error, :closed} = QUIC.ready(handle)
-    assert {:error, :closed} = QUIC.info(handle)
-    assert {:error, :closed} = QUIC.events(handle)
-    assert {:error, :closed} = QUIC.read(stream, 1)
-    assert {:error, :closed} = QUIC.operation_status(handle, make_ref())
+    assert {:error, :closed} = Quic.ready(handle)
+    assert {:error, :closed} = Quic.info(handle)
+    assert {:error, :closed} = Quic.events(handle)
+    assert {:error, :closed} = Quic.read(stream, 1)
+    assert {:error, :closed} = Quic.operation_status(handle, make_ref())
   end
 
   test "reset and stop expose operation options and preserve their references" do
@@ -25,13 +25,13 @@ defmodule QUIC.Phase1APIRegressionTest do
     stream = %StreamHandle{connection: connection, id: 0}
     ref = make_ref()
 
-    assert {:error, :closed} = QUIC.reset_stream(stream, 7, ref: ref, timeout: 1, deadline: 0)
-    assert {:error, :closed} = QUIC.stop_stream(stream, 7, ref: ref, timeout: 1, deadline: 0)
+    assert {:error, :closed} = Quic.reset_stream(stream, 7, ref: ref, timeout: 1, deadline: 0)
+    assert {:error, :closed} = Quic.stop_stream(stream, 7, ref: ref, timeout: 1, deadline: 0)
   end
 
   test "endpoint connect and accept expose timeout references for status resolution" do
-    {:ok, client} = QUIC.client([])
-    {:ok, server} = QUIC.listen([])
+    {:ok, client} = Quic.client([])
+    {:ok, server} = Quic.listen([])
 
     on_exit(fn ->
       for pid <- [client, server], Process.alive?(pid), do: GenServer.stop(pid)
@@ -41,7 +41,7 @@ defmodule QUIC.Phase1APIRegressionTest do
     :sys.suspend(client)
 
     assert {:unknown, ^connect_ref} =
-             QUIC.connect(client, {{127, 0, 0, 1}, 4433},
+             Quic.connect(client, {{127, 0, 0, 1}, 4433},
                ref: connect_ref,
                timeout: 1,
                deadline: 0
@@ -50,29 +50,29 @@ defmodule QUIC.Phase1APIRegressionTest do
     :sys.resume(client)
 
     assert %{status: :rejected, result: {:error, :deadline_expired}} =
-             QUIC.operation_status(client, connect_ref)
+             Quic.operation_status(client, connect_ref)
 
     accept_ref = make_ref()
     :sys.suspend(server)
 
     assert {:unknown, ^accept_ref} =
-             QUIC.accept(server, ref: accept_ref, timeout: 1, deadline: 0)
+             Quic.accept(server, ref: accept_ref, timeout: 1, deadline: 0)
 
     :sys.resume(server)
 
     assert %{status: :rejected, result: {:error, :deadline_expired}} =
-             QUIC.operation_status(server, accept_ref)
+             Quic.operation_status(server, accept_ref)
   end
 
   test "public limits reject zero and an attached consumer controls transfer" do
     previous = Process.flag(:trap_exit, true)
     on_exit(fn -> Process.flag(:trap_exit, previous) end)
 
-    assert {:error, :invalid_endpoint_options} = QUIC.listen(event_limit: 0)
-    assert {:error, :invalid_endpoint_options} = QUIC.client(operation_limit: 0)
+    assert {:error, :invalid_endpoint_options} = Quic.listen(event_limit: 0)
+    assert {:error, :invalid_endpoint_options} = Quic.client(operation_limit: 0)
 
     {:ok, connection} =
-      QUIC.Connection.start_link(
+      Quic.Connection.start_link(
         role: :client,
         io: {__MODULE__.Writer, self()},
         remote: {{127, 0, 0, 1}, 4433},
@@ -80,16 +80,16 @@ defmodule QUIC.Phase1APIRegressionTest do
         scheduler: [dcid: <<1, 2, 3, 4>>, scid: <<5, 6, 7, 8>>, adapter: __MODULE__.TLS]
       )
 
-    on_exit(fn -> if Process.alive?(connection), do: QUIC.Connection.close(connection) end)
+    on_exit(fn -> if Process.alive?(connection), do: Quic.Connection.close(connection) end)
 
     handle = %ConnectionHandle{
       id: connection,
-      generation: QUIC.Connection.status(connection).generation
+      generation: Quic.Connection.status(connection).generation
     }
 
-    :ok = QUIC.attach(handle, self())
+    :ok = Quic.attach(handle, self())
 
-    task = Task.async(fn -> QUIC.attach(handle, self()) end)
+    task = Task.async(fn -> Quic.attach(handle, self()) end)
     assert {:error, :not_consumer} = Task.await(task)
     assert Process.alive?(connection)
   end
@@ -108,15 +108,15 @@ defmodule QUIC.Phase1APIRegressionTest do
     ref = make_ref()
 
     assert {:unknown, ^ref} =
-             QUIC.send_stream(%StreamHandle{connection: handle, id: 0}, "x", false, ref: ref)
+             Quic.send_stream(%StreamHandle{connection: handle, id: 0}, "x", false, ref: ref)
 
     pid = doomed.()
     handle = %{handle | id: pid}
     ref = make_ref()
-    assert {:unknown, ^ref} = QUIC.read(%StreamHandle{connection: handle, id: 0}, 1, ref: ref)
+    assert {:unknown, ^ref} = Quic.read(%StreamHandle{connection: handle, id: 0}, 1, ref: ref)
     pid = doomed.()
     ref = make_ref()
-    assert {:unknown, ^ref} = QUIC.connect(pid, {{127, 0, 0, 1}, 443}, ref: ref)
+    assert {:unknown, ^ref} = Quic.connect(pid, {{127, 0, 0, 1}, 443}, ref: ref)
   end
 
   defmodule TLS do

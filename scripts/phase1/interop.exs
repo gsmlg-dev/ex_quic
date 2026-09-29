@@ -1,5 +1,5 @@
 # Run after Q5: PHASE1_INTEROP_RUN=1 mix run scripts/phase1/interop.exs client|server
-defmodule QUIC.Phase1.Interop do
+defmodule Quic.Phase1.Interop do
   @alpn "phase1-streams"
   @chunk 16_384
   @total 262_144
@@ -10,7 +10,7 @@ defmodule QUIC.Phase1.Interop do
     {:ok, endpoint} = endpoint(role, fixture)
     peer = peer(role, endpoint, fixture)
     result = await_handle(role, endpoint, peer, now() + @deadline, [])
-    routes = QUIC.Endpoint.stats(endpoint).routes
+    routes = Quic.Endpoint.stats(endpoint).routes
     GenServer.stop(endpoint)
     external = cleanup_external()
     if Port.info(peer), do: Port.close(peer)
@@ -34,13 +34,13 @@ defmodule QUIC.Phase1.Interop do
     else
       receive do
         {:quic_accept, ^endpoint} when role == "server" ->
-          {:ok, handle} = QUIC.accept(endpoint)
+          {:ok, handle} = Quic.accept(endpoint)
           activate(role, handle, peer, deadline, events)
 
         {^peer, {:data, {:eol, line}}} when role == "client" ->
           case JSON.decode(line) do
             {:ok, %{"event" => "listening", "port" => port}} ->
-              {:ok, handle} = QUIC.connect(endpoint, {{127, 0, 0, 1}, port})
+              {:ok, handle} = Quic.connect(endpoint, {{127, 0, 0, 1}, port})
               activate(role, handle, peer, deadline, [line | events])
 
             _ ->
@@ -59,7 +59,7 @@ defmodule QUIC.Phase1.Interop do
   end
 
   defp activate(role, handle, peer, deadline, peer_events) do
-    :ok = QUIC.attach(handle, self())
+    :ok = Quic.attach(handle, self())
 
     receive do
       {:quic_ready, ^handle, %{alpn: @alpn} = metadata} ->
@@ -77,7 +77,7 @@ defmodule QUIC.Phase1.Interop do
   defp start_matrix(handle, role, metadata, peer_events) do
     bidi = open(handle, :bidi, 4)
     uni = open(handle, :uni, 3)
-    {:ok, cancelled} = QUIC.open_stream(handle, :bidi)
+    {:ok, cancelled} = Quic.open_stream(handle, :bidi)
 
     sends =
       Enum.map(bidi, &{&1, payload(&1.id), true}) ++
@@ -111,7 +111,7 @@ defmodule QUIC.Phase1.Interop do
   defp open(handle, kind, n),
     do:
       Enum.map(1..n, fn _ ->
-        {:ok, s} = QUIC.open_stream(handle, kind)
+        {:ok, s} = Quic.open_stream(handle, kind)
         s
       end)
 
@@ -136,7 +136,7 @@ defmodule QUIC.Phase1.Interop do
 
       state = cancel_active_stream(state)
 
-      {:ok, events} = QUIC.events(state.handle, 128)
+      {:ok, events} = Quic.events(state.handle, 128)
 
       state =
         Enum.reduce(events, state, &event/2) |> drain_all() |> finish_uni() |> collect_peer(peer)
@@ -168,7 +168,7 @@ defmodule QUIC.Phase1.Interop do
             final and rest == <<>> and
               (field != :sends or not bidi?(stream.id) or MapSet.size(started) == 4)
 
-          case QUIC.send_stream(stream, part, fin, deadline: @deadline) do
+          case Quic.send_stream(stream, part, fin, deadline: @deadline) do
             {:ok, _} ->
               started =
                 if field == :sends and bidi?(stream.id) and part != <<>>,
@@ -203,9 +203,9 @@ defmodule QUIC.Phase1.Interop do
 
   defp cancel_active_stream(state) do
     if MapSet.size(state.bidi_started) == 4 do
-      case QUIC.send_stream(state.cancelled, "cancel") do
+      case Quic.send_stream(state.cancelled, "cancel") do
         {:ok, _} ->
-          {:ok, _} = QUIC.reset_stream(state.cancelled, 0x51)
+          {:ok, _} = Quic.reset_stream(state.cancelled, 0x51)
           %{state | cancelled_sent: true}
 
         {:blocked, _} ->
@@ -228,7 +228,7 @@ defmodule QUIC.Phase1.Interop do
     do: Enum.reduce(state.opened, state, fn {_, stream}, s -> drain(stream, s) end)
 
   defp drain(stream, state) do
-    case QUIC.read(stream, 1024) do
+    case Quic.read(stream, 1024) do
       {:ok, items} ->
         state = Enum.reduce(items, state, &read_item(&1, stream, &2))
         %{state | reads: state.reads + 1}
@@ -277,7 +277,7 @@ defmodule QUIC.Phase1.Interop do
     sent = not Enum.any?(state.sends, fn {stream, _, _} -> not bidi?(stream.id) end)
 
     if received and sent do
-      for stream <- state.uni, do: {:ok, _} = QUIC.send_stream(stream, <<>>, true)
+      for stream <- state.uni, do: {:ok, _} = Quic.send_stream(stream, <<>>, true)
       %{state | uni_fin_sent: true}
     else
       state
@@ -333,7 +333,7 @@ defmodule QUIC.Phase1.Interop do
   end
 
   defp sample(handle) do
-    {:ok, %{highwaters: r}} = QUIC.info(handle)
+    {:ok, %{highwaters: r}} = Quic.info(handle)
 
     r
     |> Map.put(:mailbox, Process.info(self(), :message_queue_len) |> elem(1))
@@ -357,7 +357,7 @@ defmodule QUIC.Phase1.Interop do
 
     transfer_ms = now() - state.started_at
     monitor = Process.monitor(state.handle.id)
-    :ok = QUIC.close(state.handle)
+    :ok = Quic.close(state.handle)
 
     cleanup =
       receive do
@@ -403,7 +403,7 @@ defmodule QUIC.Phase1.Interop do
       highwaters: Map.get(state, :highwaters, %{})
     }
 
-  defp endpoint("client", f), do: QUIC.client(tls: tls(f, "client"), streams: limits())
+  defp endpoint("client", f), do: Quic.client(tls: tls(f, "client"), streams: limits())
 
   defp endpoint("server", f) do
     opts = [tls: tls(f, "server"), streams: limits()]
@@ -419,7 +419,7 @@ defmodule QUIC.Phase1.Interop do
         :gen_udp.send(socket, ip, port, bytes)
       end
 
-      {:ok, endpoint} = QUIC.listen(Keyword.put(opts, :io, {:external, local, sender}))
+      {:ok, endpoint} = Quic.listen(Keyword.put(opts, :io, {:external, local, sender}))
 
       pump =
         spawn_link(fn ->
@@ -433,7 +433,7 @@ defmodule QUIC.Phase1.Interop do
       Process.put(:external_fixture, {pump, counters})
       {:ok, endpoint}
     else
-      QUIC.listen(opts)
+      Quic.listen(opts)
     end
   end
 
@@ -446,7 +446,7 @@ defmodule QUIC.Phase1.Interop do
           {:ok, {ip, port, bytes}} ->
             if Process.alive?(endpoint),
               do:
-                QUIC.Endpoint.receive_datagram(
+                Quic.Endpoint.receive_datagram(
                   endpoint,
                   {ip, port},
                   bytes,
@@ -495,7 +495,7 @@ defmodule QUIC.Phase1.Interop do
     do:
       port("client", [
         "--port",
-        Integer.to_string(elem(QUIC.local(ep), 1)),
+        Integer.to_string(elem(Quic.local(ep), 1)),
         "--ca",
         Path.join(f, "root.pem")
       ])
@@ -552,4 +552,4 @@ defmodule QUIC.Phase1.Interop do
       )
 end
 
-if System.get_env("PHASE1_INTEROP_RUN") == "1", do: QUIC.Phase1.Interop.run(System.argv())
+if System.get_env("PHASE1_INTEROP_RUN") == "1", do: Quic.Phase1.Interop.run(System.argv())

@@ -1,6 +1,6 @@
-defmodule QUIC.Phase1StreamLifecycleTest do
+defmodule Quic.Phase1StreamLifecycleTest do
   use ExUnit.Case, async: true
-  alias QUIC.Streams
+  alias Quic.Streams
 
   test "a reset after delivered FIN checks final size without emitting another terminal" do
     state = Streams.new(:client)

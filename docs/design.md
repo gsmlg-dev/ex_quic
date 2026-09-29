@@ -6,19 +6,19 @@ Proposed implementation; module names are targets. This document complements, ra
 
 | Target | Responsibility |
 |---|---|
-| `QUIC` / connection and stream handles | Explicit application operations; handles include connection identity/generation |
-| `QUIC.Engine` | Immutable transport transition state and ordered effects |
-| `QUIC.Connection` | `:gen_statem`, current TLS/transport states, effect execution, deadlines and application ownership |
-| `QUIC.Endpoint` / `QUIC.CIDRouter` | Admission, provisional Initial lookup, CID registry and connection lifecycle |
-| `QUIC.Wire.*` | Version-aware packet/header/frame/varint codecs |
-| `QUIC.Protection.*` | Initial, packet AEAD, header protection, Retry and key phases |
-| `QUIC.TransportParameters` | Ordered serialization and semantic/role/CID validation |
-| `QUIC.CryptoStream` / `QUIC.RangeSet` | Sparse bounded CRYPTO storage, emitted byte retention and ACK/loss bookkeeping |
-| `QUIC.Recovery` / `QUIC.Congestion.NewReno` | Sent-packet metadata, RTT, loss/PTO, congestion and pacing |
-| `QUIC.Stream` / `QUIC.FlowControl` | Stream state, final size, offset accounting, cancellation and credit |
-| `QUIC.TLS.ExSSL` | Serialized public-provider calls and typed return adaptation, no copied handshake logic |
-| `QUIC.Inspector` / `QUIC.Profile` | Passive observation and capability-validated wire policy |
-| `QUIC.IO.GenUDP` / external IO behaviour | Socket operations or borrowed send capability with explicit outcomes |
+| `Quic` / connection and stream handles | Explicit application operations; handles include connection identity/generation |
+| `Quic.Engine` | Immutable transport transition state and ordered effects |
+| `Quic.Connection` | `:gen_statem`, current TLS/transport states, effect execution, deadlines and application ownership |
+| `Quic.Endpoint` / `Quic.CIDRouter` | Admission, provisional Initial lookup, CID registry and connection lifecycle |
+| `Quic.Wire.*` | Version-aware packet/header/frame/varint codecs |
+| `Quic.Protection.*` | Initial, packet AEAD, header protection, Retry and key phases |
+| `Quic.TransportParameters` | Ordered serialization and semantic/role/CID validation |
+| `Quic.CryptoStream` / `Quic.RangeSet` | Sparse bounded CRYPTO storage, emitted byte retention and ACK/loss bookkeeping |
+| `Quic.Recovery` / `Quic.Congestion.NewReno` | Sent-packet metadata, RTT, loss/PTO, congestion and pacing |
+| `Quic.Stream` / `Quic.FlowControl` | Stream state, final size, offset accounting, cancellation and credit |
+| `Quic.TLS.ExSSL` | Serialized public-provider calls and typed return adaptation, no copied handshake logic |
+| `Quic.Inspector` / `Quic.Profile` | Passive observation and capability-validated wire policy |
+| `Quic.IO.GenUDP` / external IO behaviour | Socket operations or borrowed send capability with explicit outcomes |
 
 Keep modules small and functional. Avoid a process wrapper for each data structure, dynamic atom creation from peer input, and macros that hide protocol transitions.
 

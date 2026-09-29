@@ -2,7 +2,7 @@
 
 ## Mission and active documents
 
-Implement an independent Elixir QUIC v1 library: app `:elixir_quic`, Hex package `elixir_quic`, public namespace `QUIC`. Required products are Initial fingerprint observation, profile-controlled clients and an Abyss-hosted server. Read `CODEX-START.md`, `docs/implement-plan.md`, `docs/architecture.md` and the TLS/Abyss/testing contracts before changes.
+Implement an independent Elixir QUIC v1 library: app `:elixir_quic`, Hex package `elixir_quic`, public namespace `Quic`. Required products are Initial fingerprint observation, profile-controlled clients and an Abyss-hosted server. Read `CODEX-START.md`, `docs/implement-plan.md`, `docs/architecture.md` and the TLS/Abyss/testing contracts before changes.
 
 This is revision 3. Earlier proposed ex_ssl export APIs are superseded by the actual reviewed v0.7.1 interface. Preserve existing local code/user changes; do not reset a workspace to a planning snapshot.
 

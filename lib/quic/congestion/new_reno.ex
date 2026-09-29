@@ -1,4 +1,4 @@
-defmodule QUIC.Congestion.NewReno do
+defmodule Quic.Congestion.NewReno do
   @moduledoc """
   Pure RFC 9002-style NewReno congestion controller.
 

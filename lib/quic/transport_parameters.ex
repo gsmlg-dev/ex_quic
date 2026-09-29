@@ -1,10 +1,10 @@
-defmodule QUIC.TransportParameters do
+defmodule Quic.TransportParameters do
   @moduledoc """
   Bounded QUIC v1 transport-parameter wire and semantic helpers.
 
   The `ordered` list is the wire representation and is retained so callers can
   observe order and unknown extensions. `values` is the validated semantic view
-  of parameters known to this version of QUIC.
+  of parameters known to this version of Quic.
   """
 
   @max_parameter_bytes 65_535
@@ -109,8 +109,8 @@ defmodule QUIC.TransportParameters do
         {:error, :transport_parameters_too_large}
 
       true ->
-        with {:ok, id_wire} <- QUIC.Codec.encode_varint(id),
-             {:ok, len_wire} <- QUIC.Codec.encode_varint(byte_size(value)) do
+        with {:ok, id_wire} <- Quic.Codec.encode_varint(id),
+             {:ok, len_wire} <- Quic.Codec.encode_varint(byte_size(value)) do
           wire = <<id_wire::binary, len_wire::binary, value::binary>>
           encode_entries(rest, MapSet.put(seen, id), [wire | acc], total + byte_size(wire))
         end
@@ -127,8 +127,8 @@ defmodule QUIC.TransportParameters do
     do: {:error, :parameter_count_limit}
 
   defp decode_entries(data, ordered, values, unknown, seen, limit) do
-    with {:ok, id, rest} <- QUIC.Codec.decode_varint(data),
-         {:ok, length, rest} <- QUIC.Codec.decode_varint(rest),
+    with {:ok, id, rest} <- Quic.Codec.decode_varint(data),
+         {:ok, length, rest} <- Quic.Codec.decode_varint(rest),
          true <- length <= @max_parameter_bytes,
          true <- byte_size(rest) >= length,
          <<value::binary-size(^length), tail::binary>> <- rest do
@@ -167,7 +167,7 @@ defmodule QUIC.TransportParameters do
   end
 
   defp decode_value(:varint, value) do
-    case QUIC.Codec.decode_varint(value) do
+    case Quic.Codec.decode_varint(value) do
       {:ok, number, <<>>} -> {:ok, number}
       {:ok, _, _} -> {:error, :invalid_parameter_value}
       {:error, _} -> {:error, :invalid_parameter_value}

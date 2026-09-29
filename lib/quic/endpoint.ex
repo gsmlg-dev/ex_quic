@@ -1,4 +1,4 @@
-defmodule QUIC.Endpoint do
+defmodule Quic.Endpoint do
   @moduledoc """
   Bounded standalone UDP endpoint with persistent connection routing.
 
@@ -8,9 +8,9 @@ defmodule QUIC.Endpoint do
   exposed. This internal endpoint is not an independent interoperability claim.
   """
   use GenServer
-  alias QUIC.{Codec, Connection, TransportParameters, Retry, Protection}
-  alias QUIC.IO.GenUDP
-  alias QUIC.IO.ExternalWriter
+  alias Quic.{Codec, Connection, TransportParameters, Retry, Protection}
+  alias Quic.IO.GenUDP
+  alias Quic.IO.ExternalWriter
 
   @cid_length 8
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
@@ -436,7 +436,7 @@ defmodule QUIC.Endpoint do
   end
 
   defp handle(%{pid: pid, generation: generation}),
-    do: %QUIC.Runtime.ConnectionHandle{id: pid, generation: generation}
+    do: %Quic.Runtime.ConnectionHandle{id: pid, generation: generation}
 
   defp generation(pid) do
     {:ok, Connection.status(pid).generation}
@@ -466,7 +466,7 @@ defmodule QUIC.Endpoint do
   end
 
   defp stream_transport_entries(opts) do
-    streams = QUIC.Streams.new(:server, opts)
+    streams = Quic.Streams.new(:server, opts)
 
     values = [
       {0x04, streams.max_data},
@@ -478,7 +478,7 @@ defmodule QUIC.Endpoint do
     ]
 
     Enum.reduce_while(values, {:ok, []}, fn {id, value}, {:ok, acc} ->
-      case QUIC.Codec.encode_varint(value) do
+      case Quic.Codec.encode_varint(value) do
         {:ok, encoded} -> {:cont, {:ok, acc ++ [%{id: id, value: encoded}]}}
         {:error, _} = error -> {:halt, error}
       end

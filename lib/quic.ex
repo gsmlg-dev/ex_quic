@@ -1,4 +1,4 @@
-defmodule QUIC do
+defmodule Quic do
   @moduledoc """
   Certificate-based QUIC v1 reliable streams with bounded pull consumption.
 
@@ -6,8 +6,8 @@ defmodule QUIC do
   admission outcomes and limitations. ALPN is metadata; application protocols
   are provided by consumers.
   """
-  alias QUIC.{Connection, Endpoint}
-  alias QUIC.Runtime.{ConnectionHandle, StreamHandle}
+  alias Quic.{Connection, Endpoint}
+  alias Quic.Runtime.{ConnectionHandle, StreamHandle}
 
   @type failure :: {:error, term()} | {:blocked, term()} | {:unknown, reference()}
   @type operation_options :: keyword()

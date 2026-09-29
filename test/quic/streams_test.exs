@@ -1,7 +1,7 @@
-defmodule QUIC.StreamsTest do
+defmodule Quic.StreamsTest do
   use ExUnit.Case, async: true
 
-  alias QUIC.Streams
+  alias Quic.Streams
 
   test "stream IDs encode role and direction and enforce local permissions" do
     state = Streams.new(:client, peer_max_streams_bidi: 1, peer_max_streams_uni: 1)

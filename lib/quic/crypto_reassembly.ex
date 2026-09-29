@@ -1,4 +1,4 @@
-defmodule QUIC.CryptoReassembly do
+defmodule Quic.CryptoReassembly do
   @moduledoc """
   Bounded sparse storage for one QUIC CRYPTO stream.
 

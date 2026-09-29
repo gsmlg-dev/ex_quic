@@ -1,9 +1,9 @@
-defmodule QUIC.InspectorTest do
+defmodule Quic.InspectorTest do
   use ExUnit.Case, async: true
 
-  alias QUIC.Inspector
+  alias Quic.Inspector
   import Bitwise
-  alias QUIC.{Codec, Protection}
+  alias Quic.{Codec, Protection}
 
   @hello Base.decode16!(
            "0100008B03030000000000000000000000000000000000000000000000000000000000000000000002130201000060002B0003020304000A00040002001D003300260024001D00208520F0098930A754748B7DDCB43EF75A0DBF3A0D26381AF4EBA4A98EAA9B4E6A000D0004000204030010000E000C02683208687474702F312E3100050005010000000000120000",
@@ -30,16 +30,16 @@ defmodule QUIC.InspectorTest do
   defp encrypted_initial(hello_override \\ nil, pn \\ <<0, 0>>) do
     {generated, dcid, scid} = generated_client_hello()
     hello = hello_override || generated
-    assert {:ok, plaintext} = QUIC.Codec.encode_frames([%{type: :crypto, offset: 0, data: hello}])
-    assert {:ok, keys} = QUIC.Protection.initial_secrets(dcid, :client)
-    {:ok, length} = QUIC.Codec.encode_varint(byte_size(pn) + byte_size(plaintext) + 16)
+    assert {:ok, plaintext} = Quic.Codec.encode_frames([%{type: :crypto, offset: 0, data: hello}])
+    assert {:ok, keys} = Quic.Protection.initial_secrets(dcid, :client)
+    {:ok, length} = Quic.Codec.encode_varint(byte_size(pn) + byte_size(plaintext) + 16)
 
     header =
       <<0xC1, 1::32, byte_size(dcid), dcid::binary, byte_size(scid), scid::binary, 0,
         length::binary>>
 
     assert {:ok, ciphertext} =
-             QUIC.Protection.aead_encrypt(
+             Quic.Protection.aead_encrypt(
                keys.key,
                keys.iv,
                :binary.decode_unsigned(pn),
@@ -49,7 +49,7 @@ defmodule QUIC.InspectorTest do
 
     packet = header <> pn <> ciphertext
     sample = binary_part(packet, byte_size(header) + 4, 16)
-    assert {:ok, mask} = QUIC.Protection.header_protection_mask(keys.hp, sample, :aes_128_gcm)
+    assert {:ok, mask} = Quic.Protection.header_protection_mask(keys.hp, sample, :aes_128_gcm)
 
     masked_pn =
       for {byte, index} <- Enum.with_index(:binary.bin_to_list(pn)),

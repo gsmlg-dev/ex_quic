@@ -1,4 +1,4 @@
-defmodule QUIC.PeerCIDs do
+defmodule Quic.PeerCIDs do
   @moduledoc "Bounded peer connection-ID state and retirement watermark."
   defstruct ids: %{}, current: 0, retired_before: 0, limit: 2
 

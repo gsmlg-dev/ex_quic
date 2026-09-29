@@ -1,15 +1,15 @@
-defmodule QUIC.HandshakeScheduler do
+defmodule Quic.HandshakeScheduler do
   @moduledoc """
   Deterministic handshake packet scheduler.
 
   This module is deliberately socket-free.  TLS emissions become retained
   CRYPTO ranges and protected send effects; local send receipts and peer ACKs
-  are applied separately through `QUIC.Recovery`.
+  are applied separately through `Quic.Recovery`.
   """
 
   import Bitwise
 
-  alias QUIC.{Codec, Protection, Recovery, TLSDriver, PeerCIDs, Streams, TransportParameters}
+  alias Quic.{Codec, Protection, Recovery, TLSDriver, PeerCIDs, Streams, TransportParameters}
 
   @levels [:initial, :handshake, :application]
   @spaces [:initial, :handshake, :application]
