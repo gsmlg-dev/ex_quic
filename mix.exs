@@ -1,37 +1,20 @@
-defmodule Quic.MixProject do
+defmodule Quic.Umbrella.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :elixir_quic,
+      apps_path: "apps",
       version: "0.3.0",
-      description:
-        "Experimental QUIC v1 transport, Initial fingerprint observation and client profiles",
-      package: package(),
-      elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
-      deps: deps(),
-      warnings_as_errors: true
-    ]
-  end
-
-  def application do
-    [extra_applications: [:crypto, :logger]]
-  end
-
-  def cli do
-    [preferred_envs: ["test.watch": :test]]
-  end
-
-  defp package do
-    [
-      files: ["lib", "mix.exs", "README.md", "LICENSE"],
-      licenses: ["MIT"],
-      links: %{"GitHub" => "https://github.com/gsmlg-dev/ex_quic"}
+      deps: deps()
     ]
   end
 
   defp deps do
-    [{:ex_ssl, "== 0.7.2"}]
+    # http_core also depends on these apps; resolve them to the umbrella sources.
+    [
+      {:ex_ssl, path: "apps/ex_ssl", env: Mix.env(), override: true},
+      {:elixir_quic, path: "apps/elixir_quic", env: Mix.env(), override: true}
+    ]
   end
 end

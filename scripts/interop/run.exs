@@ -34,7 +34,7 @@ defmodule Quic.Interop.Run do
       do: raise("unsupported scenario")
 
     File.mkdir_p!(directory)
-    fixture = Path.expand("test/fixtures/tls")
+    fixture = Path.expand("apps/elixir_quic/test/fixtures/tls")
 
     der = fn name ->
       [{:Certificate, bytes, :not_encrypted}] =

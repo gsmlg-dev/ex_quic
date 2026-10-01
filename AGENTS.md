@@ -4,11 +4,11 @@
 
 Implement an independent Elixir QUIC v1 library: app `:elixir_quic`, Hex package `elixir_quic`, public namespace `Quic`. Required products are Initial fingerprint observation, profile-controlled clients and an Abyss-hosted server. Read `CODEX-START.md`, `docs/implement-plan.md`, `docs/architecture.md` and the TLS/Abyss/testing contracts before changes.
 
-This is revision 3. Earlier proposed ex_ssl export APIs are superseded by the actual reviewed v0.7.1 interface. Preserve existing local code/user changes; do not reset a workspace to a planning snapshot.
+This is revision 3. Earlier proposed ex_ssl export APIs are superseded by the reviewed v0.7.2 interface. The repository is an umbrella with `apps/elixir_quic` (`:elixir_quic`), `apps/ex_ssl` (`:ex_ssl`), and the experimental `apps/elixir_quic_http3` (`:elixir_quic_http3`). Inclusion of the HTTP/3 companion does not prove full HTTP/3 network support. Preserve existing local code/user changes; do not reset a workspace to a planning snapshot.
 
 ## Dependency direction
 
-`abyss -> ex_quic -> ex_ssl`. QUIC never imports Abyss modules. Use the full upstream SHA in `docs/ex-ssl-quic-contract.md`; verify any deliberate upgrade. Use only public TLS/fingerprint/profile interfaces in production. Do not copy TLS coordination/transcript/PKIX logic, use OTP :ssl as implementation, or add a native QUIC backend without a separately authorized architecture change.
+`abyss -> ex_quic -> ex_ssl`. QUIC never imports Abyss modules. The sibling `apps/ex_ssl` source is imported from the full upstream SHA in `docs/ex-ssl-quic-contract.md`; verify any deliberate upgrade. Use only public TLS/fingerprint/profile interfaces in production. Do not copy TLS coordination/transcript/PKIX logic, use OTP :ssl as implementation, or add a native QUIC backend without a separately authorized architecture change.
 
 ## Functional architecture
 

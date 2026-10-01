@@ -17,7 +17,7 @@ from peer import Capture
 class ImpairmentTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         records = [json.loads(line) for line in
-                   Path('test/fixtures/interop/aioquic-1.2.0/client-udp.jsonl').read_text().splitlines()]
+                   Path('apps/elixir_quic/test/fixtures/interop/aioquic-1.2.0/client-udp.jsonl').read_text().splitlines()]
         self.flight = next(base64.b64decode(r['payload']) for r in records if r['direction'] == 'send')
         self.address = ('127.0.0.1', 443)
         self.directory = tempfile.TemporaryDirectory()

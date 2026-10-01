@@ -1,4 +1,6 @@
-# Codex task — start ex_quic against the reviewed ex_ssl API
+# Historical M0–M1 task — start ex_quic against the reviewed ex_ssl API
+
+This document records the original M0–M1 execution slice and is not a current implementation assignment. The current repository is an umbrella: `apps/elixir_quic` is `:elixir_quic`, `apps/ex_ssl` is `:ex_ssl`, and `apps/elixir_quic_http3` is the experimental `:elixir_quic_http3` companion. The apps use shared root Mix build, dependency and configuration paths. Read [the current TLS contract](docs/ex-ssl-quic-contract.md) for source provenance.
 
 Implement actual code, tests and project documentation in the current ex_quic workspace. Do not output another feasibility report or a plan-only response.
 
@@ -22,7 +24,7 @@ Record actual Elixir/OTP versions and baseline commands. Verify applicable RFC e
 
 ## Dependency and ownership rules
 
-Use `gsmlg-dev/ex_ssl` at full commit `02eb981f59d4e182d4473e264a9f8b093ec6bf3d` as the default Git dependency and lock it. The release is v0.7.1; its release task did not publish to Hex. Do not silently substitute an older Hex release or follow floating main. A local source override is test/development-only and must be explicit.
+At the time of this initial slice, `gsmlg-dev/ex_ssl@02eb981f59d4e182d4473e264a9f8b093ec6bf3d` was the reviewed Git dependency. The current `apps/elixir_quic` dependency is `{:ex_ssl, "== 0.7.2", in_umbrella: true, hex: :ex_ssl}` and its sibling source is imported from upstream `fb47051355c9d0a29caee046fa060a745ad0ce5b`. The `hex` option preserves package metadata while Mix resolves the umbrella sibling. The historical Hex package and source-review evidence remain in the TLS contract.
 
 `SSL.QUIC` and `SSL.Fingerprint` already exist. Do not reopen the completed upstream refactor. Use their documented public contracts, not `SSL.Protocol.*` internals. TLS owns authentication/transcript/fresh key exchange; QUIC owns packet protection, offsets, recovery and transport parameters. Do not implement TLS again, use TLS record TrafficState for packets, or call OTP :ssl as the production handshake implementation.
 

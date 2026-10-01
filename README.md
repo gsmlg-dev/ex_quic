@@ -7,13 +7,13 @@
 [![Release](https://github.com/gsmlg-dev/ex_quic/actions/workflows/release.yml/badge.svg)](https://github.com/gsmlg-dev/ex_quic/actions/workflows/release.yml)
 [![E2E](https://github.com/gsmlg-dev/ex_quic/actions/workflows/e2e.yml/badge.svg)](https://github.com/gsmlg-dev/ex_quic/actions/workflows/e2e.yml)
 
-This repository contains an incremental Elixir QUIC implementation and its revision 3 design. Independent certificate handshakes, Retry, single-fault packet impairment and certificate/ALPN rejection pass in both roles against aioquic 1.2.0. Full protocol lifecycle and product acceptance remain incomplete. The Phase 1 reliable-stream implementation uses the exact Hex dependency `ex_ssl 0.7.2`, whose packaged production source matches the accepted G-S commit `f1327e0bb7fb2093b8dc2b07e72b26233a739963`. See the [Phase 1 acceptance record](docs/phase1-acceptance.md) for current gates, exact evidence and limitations.
+This repository is an Elixir umbrella containing an incremental QUIC implementation, its TLS provider, and an experimental HTTP/3 companion. Independent certificate handshakes, Retry, single-fault packet impairment and certificate/ALPN rejection passed in both QUIC roles against aioquic 1.2.0 before the umbrella conversion. Full protocol lifecycle and product acceptance remain incomplete. The QUIC app now uses sibling `ex_ssl 0.7.2` source imported from upstream commit `fb47051355c9d0a29caee046fa060a745ad0ce5b`; the prior Hex package comparison against accepted G-S commit `f1327e0bb7fb2093b8dc2b07e72b26233a739963` remains historical evidence. See the [Phase 1 acceptance record](docs/phase1-acceptance.md) for gates, exact evidence and limitations.
 
 The project has three mandatory goals: JA3/JA4 observation of visible QUIC ClientHello data, measured profile-controlled client behavior, and opt-in integration with the Abyss UDP server. It is not a client-only plan.
 
 ## Start here
 
-Use [CODEX-START.md](CODEX-START.md) in the actual ex_quic workspace. The first execution slice implements M0–M1: engineering/dependency contracts, wire codecs and Initial/Retry protection with tests. It does not claim that UDP networking is complete.
+[CODEX-START.md](CODEX-START.md) records the original M0–M1 execution slice: engineering/dependency contracts, wire codecs and Initial/Retry protection with tests. Current implementation status is tracked in the acceptance records below.
 
 | Document | Purpose |
 |---|---|
@@ -27,9 +27,30 @@ Use [CODEX-START.md](CODEX-START.md) in the actual ex_quic workspace. The first 
 | [ex_ssl review](docs/ex-ssl-review.md) | F1 closure and honest scope of current verification |
 | [Revision changes](docs/revision-3.md) / [Sources](docs/sources.md) | Supersession rules and pinned evidence |
 
+## Umbrella layout and commands
+
+| Path | OTP app | Purpose |
+|---|---|---|
+| `apps/elixir_quic` | `:elixir_quic` (v0.3.0) | QUIC transport and public `Quic` namespace |
+| `apps/ex_ssl` | `:ex_ssl` (v0.7.2) | Imported TLS provider source |
+| `apps/elixir_quic_http3` | `:elixir_quic_http3` (v0.16.0) | Imported experimental `QuicHttp3` companion; inclusion does not establish complete HTTP/3 support |
+
+From the repository root, `mix deps.get`, `mix format --check-formatted`, `mix compile --warnings-as-errors`, and `mix test` cover the umbrella. Run one app's tests with `mix test apps/elixir_quic/test/`, `mix test apps/ex_ssl/test/`, or `mix test apps/elixir_quic_http3/test/`. The HTTP/3 scoped run passed 30 tests, and the full umbrella suite passed. Root `scripts/` and their `mix run scripts/...` commands remain at the repository root; QUIC test fixtures live under `apps/elixir_quic/test/fixtures/`. The apps share root `_build`, `deps`, `mix.lock`, and `config`.
+
+For local development, the root Mix project sets explicit path and environment overrides for `ex_ssl` and `elixir_quic` to resolve the dependencies used by `http_core`. Mix currently reports duplicate top-level dependency warnings for those apps; these have appeared even when `mix compile --warnings-as-errors` exits successfully.
+
+To build the `elixir_quic` Hex archive without publishing, run:
+
+```sh
+mkdir -p _build
+(cd apps/elixir_quic && mix hex.build --output ../../_build/elixir_quic.tar)
+```
+
+The HTTP/3 companion was imported from `gsmlg-dev/http_fetch` at `647ca64ce4aa2818030b036ef6f9df99e8e914ac` (`apps/elixir_quic_http3` in that source repository). It uses the external Hex dependency `http_core 0.16.0`; `elixir_quic` and `ex_ssl` are local umbrella siblings. The release workflow publishes only the `elixir_quic` package from its child project. Importing the sibling apps does not publish them.
+
 ## Dependency and status
 
-`SSL.QUIC` and `SSL.Fingerprint` are real upstream APIs at the reviewed pin, not work to invent in ex_quic. The dependency is now resolved from Hex; its immutable source comparison and lockfile checksums are recorded in the [TLS contract](docs/ex-ssl-quic-contract.md). See [implementation progress](docs/requirements-progress.md) and [runtime evidence](docs/m3-runtime.md) and [independent peer evidence](docs/m3-interop.md) and [M3-C through M3-E acceptance](docs/m3-acceptance.md) for implemented surfaces and remaining gates; design documents also include future modules.
+`SSL.QUIC` and `SSL.Fingerprint` are real upstream APIs. `apps/ex_ssl` is now an umbrella sibling; its source provenance and historical Hex comparison are recorded in the [TLS contract](docs/ex-ssl-quic-contract.md). See [implementation progress](docs/requirements-progress.md) and [runtime evidence](docs/m3-runtime.md) and [independent peer evidence](docs/m3-interop.md) and [M3-C through M3-E acceptance](docs/m3-acceptance.md) for implemented surfaces and remaining gates; design documents also include future modules.
 
 The upstream formatter finding is closed and the inspected supported-runtime compiler/test and TLS-reference jobs pass. Current known upstream limitations, historical macOS TCP integration failures and the absence of a whole-library security audit remain explicit in the review document.
 
@@ -48,8 +69,6 @@ dependency/application entry with `:elixir_quic`, including application config
 or release configuration that names the old app. Rename calls and aliases from
 `QUIC` / `QUIC.*` to `Quic` / `Quic.*`; function names and arguments are unchanged.
 The unrelated Hex package named `ex_quic` is not this library.
-
-Copy/adapt these documents into the workspace while preserving local code and user changes. Replace active v1/v2 planning instructions; move older revisions to an explicitly historical archive rather than leaving conflicting prerequisites. Do not create a remote repository or modify ex_ssl/Abyss during the initial scoped task.
 
 Local tests cover codecs, packet protection, inspection, recovery, and both-role UDP certificate handshakes. These self-connection tests are not independent interoperability or security certification. The full product gate requires observer + measured client profiles + Abyss termination; HTTP/3/QPACK and additional TLS features remain separate work.
 
@@ -71,7 +90,7 @@ for negotiation, size limits, bounded queues and admission semantics.
 
 The manual `Release` GitHub Actions workflow validates the source, builds the
 Hex package, pushes the verified version commit/tag, publishes it with
-`mix hex.publish package --yes`, and creates a GitHub release with the package
+`mix hex.publish package --yes` from `apps/elixir_quic`, and creates a GitHub release with the package
 attached. A failed publication can be resumed with the same version and branch;
 the existing tag is reused, and an existing Hex version is accepted only when
 its checksum matches the built archive.
@@ -82,13 +101,9 @@ this workflow publishes the package only.
 
 Dispatch with the intended new version and `git_ref=main`. Existing `v0.2.1`
 and earlier tags remain source-only releases; this change does not republish them.
-Validate packaging locally without publishing:
-
-```sh
-mix hex.build --output _build/elixir_quic.tar
-```
+Validate packaging locally with the child-app command above.
 
 ## License
 
 MIT. See [LICENSE](LICENSE). Copied test-only TLS fixtures retain their upstream
-Apache-2.0 license in `test/fixtures/tls/LICENSE` and are excluded from the Hex package.
+Apache-2.0 license in `apps/elixir_quic/test/fixtures/tls/LICENSE` and are excluded from the Hex package.

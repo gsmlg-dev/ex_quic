@@ -1,6 +1,6 @@
 # Verification and evidence plan
 
-All items here are requirements for future ex_quic work, not tests performed by this review. Actual ex_ssl evidence is separated in [ex-ssl-review.md](ex-ssl-review.md).
+All items here are requirements for future ex_quic work, not tests performed by this review. Actual ex_ssl evidence is separated in [ex-ssl-review.md](ex-ssl-review.md). The current umbrella runs the full suite with `mix test` at the root; scoped checks from the root are `mix test apps/elixir_quic/test/`, `mix test apps/ex_ssl/test/`, and `mix test apps/elixir_quic_http3/test/`. After the umbrella import, the HTTP/3 scoped run passed 30 tests and the full umbrella suite passed. Archived results cited below predate the umbrella import and do not validate the new layout by themselves.
 
 ## Test layers
 

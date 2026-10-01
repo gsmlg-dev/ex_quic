@@ -6,7 +6,7 @@ defmodule Quic.Phase1.Interop do
   @deadline 15_000
 
   def run([role]) when role in ["client", "server"] do
-    fixture = Path.expand("../../test/fixtures/tls", __DIR__)
+    fixture = Path.expand("../../apps/elixir_quic/test/fixtures/tls", __DIR__)
     {:ok, endpoint} = endpoint(role, fixture)
     peer = peer(role, endpoint, fixture)
     result = await_handle(role, endpoint, peer, now() + @deadline, [])

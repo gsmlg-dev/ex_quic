@@ -1,4 +1,4 @@
-fixture = Path.expand("../../test/fixtures/tls", __DIR__)
+fixture = Path.expand("../../apps/elixir_quic/test/fixtures/tls", __DIR__)
 
 der = fn name ->
   [{:Certificate, bytes, :not_encrypted}] =

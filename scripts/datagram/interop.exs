@@ -9,7 +9,7 @@ defmodule Quic.Datagram.Interop do
   @complete "elixir-complete-h3"
 
   def run([role]) when role in ["client", "server"] do
-    fixture = Path.expand("../../test/fixtures/tls", __DIR__)
+    fixture = Path.expand("../../apps/elixir_quic/test/fixtures/tls", __DIR__)
     {:ok, endpoint} = start_endpoint(role, fixture)
     peer = start_peer(role, endpoint, fixture)
     deadline = System.monotonic_time(:millisecond) + @deadline

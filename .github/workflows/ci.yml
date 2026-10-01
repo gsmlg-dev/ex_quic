@@ -50,7 +50,10 @@ jobs:
         run: mix compile --warnings-as-errors
 
       - name: Build Hex package
-        run: mix hex.build --output _build/elixir_quic.tar
+        run: |
+          mkdir -p _build
+          cd apps/elixir_quic
+          mix hex.build --output ../../_build/elixir_quic.tar
 
       - name: Check git diff
         run: git diff --check
