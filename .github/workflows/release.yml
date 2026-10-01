@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (e.g. 0.2.2)"
+        description: "Shared package version (e.g. 1.0.0)"
         required: true
         type: string
       git_ref:
@@ -17,12 +17,12 @@ permissions:
   contents: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: release-all-packages
   cancel-in-progress: false
 
 jobs:
   release:
-    name: Release
+    name: Release all three packages
     runs-on: ubuntu-latest
     env:
       RELEASE_VERSION: ${{ inputs.version }}
@@ -34,25 +34,22 @@ jobs:
           ref: ${{ inputs.git_ref }}
           fetch-depth: 0
 
-      - name: Validate release
+      - name: Validate release revision
         id: revision
         run: |
-          [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
           git check-ref-format --branch "$RELEASE_BRANCH"
           test "$(git branch --show-current)" = "$RELEASE_BRANCH"
           if git rev-parse --verify --quiet "refs/tags/v$RELEASE_VERSION"; then
             git merge-base --is-ancestor "refs/tags/v$RELEASE_VERSION" HEAD
             git checkout --detach "refs/tags/v$RELEASE_VERSION"
+            if [ ! -f scripts/release/versions.exs ]; then
+              echo "Existing tag lacks the three-package release contract; it cannot be reused." >&2
+              exit 1
+            fi
             echo "existing=true" >> "$GITHUB_OUTPUT"
           else
             echo "existing=false" >> "$GITHUB_OUTPUT"
-          fi
-          if [ -f apps/elixir_quic/mix.exs ]; then
-            echo "QUIC_APP_DIR=apps/elixir_quic" >> "$GITHUB_ENV"
-            echo "QUIC_MIX_FILE=apps/elixir_quic/mix.exs" >> "$GITHUB_ENV"
-          else
-            echo "QUIC_APP_DIR=." >> "$GITHUB_ENV"
-            echo "QUIC_MIX_FILE=mix.exs" >> "$GITHUB_ENV"
           fi
 
       - name: Check Hex credentials
@@ -60,7 +57,7 @@ jobs:
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
         run: |
           if [ -z "$HEX_API_KEY" ]; then
-            echo "Configure the HEX_API_KEY Actions secret with package publish permission." >&2
+            echo "Configure HEX_API_KEY with publish permission for ex_ssl, elixir_quic, and elixir_quic_http3." >&2
             exit 1
           fi
 
@@ -70,14 +67,17 @@ jobs:
           elixir-version: '1.20.1'
           otp-version: '29.0'
 
-      - name: Update version
-        if: steps.revision.outputs.existing == 'false'
+      - name: Prepare or validate shared version and dependency graph
         run: |
-          sed -i.bak -E "s/version: \"[^\"]+\"/version: \"$RELEASE_VERSION\"/" "$QUIC_MIX_FILE"
-          rm -f "$QUIC_MIX_FILE.bak"
+          if [ "${{ steps.revision.outputs.existing }}" = true ]; then
+            elixir scripts/release/versions.exs validate "$RELEASE_VERSION"
+          else
+            elixir scripts/release/versions.exs prepare "$RELEASE_VERSION"
+          fi
 
       - name: Install dependencies
         run: |
+          unset EX_QUIC_CI_APP
           mix local.hex --force
           mix local.rebar --force
           mix deps.get
@@ -86,26 +86,41 @@ jobs:
         env:
           MIX_ENV: test
         run: |
+          unset EX_QUIC_CI_APP
           mix format --check-formatted
           mix format --check-formatted scripts/phase1/interop.exs scripts/phase1/release_check.exs
           mix format --check-formatted scripts/datagram/interop.exs
+          mix format --check-formatted scripts/release/versions.exs
+          mix format --check-formatted scripts/release/archives.exs
           mix compile --warnings-as-errors
-          (cd "$QUIC_APP_DIR" && mix run --no-start -e 'config = Mix.Project.config(); unless config[:app] == :elixir_quic and config[:version] == System.fetch_env!("RELEASE_VERSION"), do: raise("release identity mismatch")')
           mix test --seed 28092026
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/release -p 'test_*.py' -v
           git diff --check
           git diff --exit-code -- mix.lock
 
-      - name: Build Hex package
+      - name: Build three Hex archives
         run: |
+          unset EX_QUIC_CI_APP
           mkdir -p _build
-          (cd "$QUIC_APP_DIR" && mix hex.build --output "$GITHUB_WORKSPACE/_build/elixir_quic-$RELEASE_VERSION.tar")
+          for package in ex_ssl elixir_quic elixir_quic_http3; do
+            (cd "apps/$package" && mix hex.build --output "$GITHUB_WORKSPACE/_build/$package-$RELEASE_VERSION.tar")
+          done
+
+      - name: Preflight all Hex releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          unset EX_QUIC_CI_APP
+          elixir scripts/release/archives.exs "$RELEASE_VERSION" _build
+          python3 scripts/release/hex_packages.py preflight "$RELEASE_VERSION" _build
+          python3 scripts/release/github_assets.py preflight "$RELEASE_VERSION" _build
 
       - name: Commit version bump
         if: steps.revision.outputs.existing == 'false'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "$QUIC_MIX_FILE"
+          git add mix.exs apps/ex_ssl/mix.exs apps/elixir_quic/mix.exs apps/elixir_quic_http3/mix.exs
           git commit -m "chore(release): v$RELEASE_VERSION"
 
       - name: Create and push version tag
@@ -114,33 +129,14 @@ jobs:
           git tag "v$RELEASE_VERSION"
           git push --atomic origin "HEAD:refs/heads/$RELEASE_BRANCH" "refs/tags/v$RELEASE_VERSION"
 
-      - name: Publish to Hex.pm
+      - name: Publish and verify all Hex packages
         env:
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
         run: |
-          archive="_build/elixir_quic-$RELEASE_VERSION.tar"
-          metadata="$RUNNER_TEMP/hex-release.json"
-          status=$(curl --silent --show-error --output "$metadata" --write-out '%{http_code}' \
-            "https://hex.pm/api/packages/elixir_quic/releases/$RELEASE_VERSION")
-          case "$status" in
-            200)
-              python3 -c 'import hashlib,json,sys; expected=json.load(open(sys.argv[1]))["checksum"]; actual=hashlib.sha256(open(sys.argv[2], "rb").read()).hexdigest(); assert expected == actual, "Existing Hex package differs from release source"' "$metadata" "$archive"
-              echo "Matching Hex package already published."
-              ;;
-            404) (cd "$QUIC_APP_DIR" && mix hex.publish package --yes) ;;
-            *) echo "Hex registry check failed: HTTP $status" >&2; exit 1 ;;
-          esac
+          unset EX_QUIC_CI_APP
+          python3 scripts/release/hex_packages.py publish "$RELEASE_VERSION" _build
 
-      - name: Create GitHub release
+      - name: Create or complete GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          if gh release view "v$RELEASE_VERSION" >/dev/null 2>&1; then
-            gh release upload "v$RELEASE_VERSION" "_build/elixir_quic-$RELEASE_VERSION.tar" --clobber
-          else
-            gh release create "v$RELEASE_VERSION" "_build/elixir_quic-$RELEASE_VERSION.tar" \
-              --verify-tag \
-              --title "v$RELEASE_VERSION" \
-              --notes "Published to Hex.pm: https://hex.pm/packages/elixir_quic/$RELEASE_VERSION" \
-              --generate-notes
-          fi
+        run: python3 scripts/release/github_assets.py complete "$RELEASE_VERSION" _build

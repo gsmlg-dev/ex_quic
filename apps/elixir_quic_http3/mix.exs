@@ -39,6 +39,7 @@ defmodule QuicHttp3.MixProject do
 
   defp deps do
     [
+      # TODO(upstream): gsmlg-dev/http_fetch#16
       {:http_core, "~> 0.16.0"},
       {:elixir_quic, "~> 0.3.0", in_umbrella: true, hex: :elixir_quic},
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false}

@@ -50,7 +50,7 @@ mkdir -p _build
 (cd apps/elixir_quic && mix hex.build --output ../../_build/elixir_quic.tar)
 ```
 
-The HTTP/3 companion was imported from `gsmlg-dev/http_fetch` at `647ca64ce4aa2818030b036ef6f9df99e8e914ac` (`apps/elixir_quic_http3` in that source repository). It uses the external Hex dependency `http_core 0.16.0`; `elixir_quic` and `ex_ssl` are local umbrella siblings. The release workflow publishes only the `elixir_quic` package from its child project. Importing the sibling apps does not publish them.
+The HTTP/3 companion was imported from `gsmlg-dev/http_fetch` at `647ca64ce4aa2818030b036ef6f9df99e8e914ac` (`apps/elixir_quic_http3` in that source repository). It uses the external Hex dependency `http_core 0.16.0`; `elixir_quic` and `ex_ssl` are local umbrella siblings. The shared-version release is currently blocked by [http_fetch#16](https://github.com/gsmlg-dev/http_fetch/issues/16): `http_core 0.16.0` requires incompatible versions of the two sibling packages.
 
 ## Dependency and status
 
@@ -92,19 +92,25 @@ for negotiation, size limits, bounded queues and admission semantics.
 
 ## Publishing
 
-The manual `Release` GitHub Actions workflow validates the source, builds the
-Hex package, pushes the verified version commit/tag, publishes it with
-`mix hex.publish package --yes` from `apps/elixir_quic`, and creates a GitHub release with the package
-attached. A failed publication can be resumed with the same version and branch;
-the existing tag is reused, and an existing Hex version is accepted only when
-its checksum matches the built archive.
+The manual `Release` GitHub Actions workflow assigns one version to the umbrella
+and all three packages, validates external dependency requirements, tests the
+source, and builds three Hex archives. It checks existing Hex releases and
+GitHub release assets before pushing the version commit/tag, then publishes
+`ex_ssl`, `elixir_quic`, and `elixir_quic_http3` in dependency order. Each
+package is verified against its archive checksum before the GitHub release is
+created with all three archives.
+A failed publication can be resumed with the same version and branch from the
+immutable tag; matching published packages are skipped. Existing GitHub assets
+must also match before missing assets are uploaded. Hex publication across three
+packages is not atomic.
 Configure the repository or organization Actions secret `HEX_API_KEY` with Hex
-publish permission for `elixir_quic` before dispatching. Missing credentials fail
+publish permission for all three packages before dispatching. Missing credentials fail
 before any version commit, tag or publication. HexDocs publication is separate;
-this workflow publishes the package only.
+this workflow publishes the packages only.
 
-Dispatch with the intended new version and `git_ref=main`. Existing `v0.2.1`
-and earlier tags remain source-only releases; this change does not republish them.
+Dispatch with the intended new version and `git_ref=main` after http_fetch#16 is
+resolved and the updated `http_core` version is locked here. Older single-package
+tags cannot be resumed as shared-version releases; they are not republished.
 Validate packaging locally with the child-app command above.
 
 ## License
