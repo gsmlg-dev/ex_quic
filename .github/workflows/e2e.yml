@@ -1,11 +1,21 @@
 name: E2E
 
 on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
-      version:
-        description: "Release version to test"
+      module:
+        description: Umbrella app to verify
         required: true
+        type: choice
+        default: all
+        options: [all, ex_ssl, elixir_quic, elixir_quic_http3]
+      version:
+        description: Optional release version; empty tests the selected branch
+        required: false
         type: string
 
 permissions:
@@ -16,25 +26,68 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    uses: ./.github/workflows/changes.yml
+    with:
+      workflow_file: e2e.yml
+      manual_module: ${{ inputs.module || 'all' }}
+
   e2e:
-    name: End-to-End Tests
+    name: E2E (${{ matrix.app }})
+    needs: changes
+    if: needs.changes.outputs.has_changes == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        app: ${{ fromJSON(needs.changes.outputs.apps) }}
     runs-on: ubuntu-latest
+    env:
+      MIX_ENV: test
+      EX_QUIC_CI_APP: ${{ matrix.app }}
     steps:
-      - name: Checkout released source
+      - name: Select source revision
+        id: source
+        env:
+          VERSION: ${{ inputs.version }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [[ "$EVENT_NAME" == workflow_dispatch && -n "$VERSION" ]]; then
+            if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "Invalid release version: expected a version such as 0.3.0" >&2
+              exit 1
+            fi
+            echo "ref=v${VERSION}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout selected source
         uses: actions/checkout@v4
         with:
-          ref: v${{ inputs.version }}
+          ref: ${{ steps.source.outputs.ref }}
 
-      - name: Setup BEAM
-        uses: erlef/setup-beam@v1
+      - name: Validate selected source supports module checks
+        run: |
+          if [[ -f scripts/ci/changed_apps.py && -d "apps/${EX_QUIC_CI_APP}" ]]; then
+            exit 0
+          fi
+          if [[ "$EX_QUIC_CI_APP" == elixir_quic && -f lib/quic.ex && ! -d apps ]]; then
+            echo "Running legacy single-app QUIC release checks."
+            exit 0
+          fi
+          echo "Selected revision does not contain this module or module-scoped E2E support." >&2
+          exit 1
+
+      - uses: erlef/setup-beam@v1
         with:
           elixir-version: '1.20.1'
           otp-version: '29.0'
 
       - name: Setup uv
+        if: matrix.app != 'elixir_quic_http3'
         uses: astral-sh/setup-uv@v5
         with:
-          python-version: "3.12"
+          python-version: '3.12'
 
       - name: Cache dependencies
         uses: actions/cache@v4
@@ -42,18 +95,55 @@ jobs:
           path: |
             deps
             _build
-          key: e2e-${{ runner.os }}-otp29.0-elixir1.20.1-mix-${{ hashFiles('**/mix.lock') }}
-          restore-keys: |
-            e2e-${{ runner.os }}-otp29.0-elixir1.20.1-mix-
+          key: e2e-${{ matrix.app }}-${{ runner.os }}-otp29.0-elixir1.20.1-${{ hashFiles('mix.lock', 'mix.exs', format('apps/{0}/mix.exs', matrix.app)) }}
 
-      - name: Install dependencies
+      - name: Install dependencies and compile selected closure
         run: |
           mix local.hex --force
           mix local.rebar --force
           mix deps.get
           mix compile --warnings-as-errors
 
-      - name: Run E2E test suite
+      - name: Compare TLS QUIC boundary with aioquic
+        if: matrix.app == 'ex_ssl'
+        run: |
+          uv venv --clear _build/ex_ssl-quic-py --python 3.12
+          uv pip install --python _build/ex_ssl-quic-py/bin/python -r apps/ex_ssl/e2e/quic_tls/requirements.txt
+          QUIC_TLS_PYTHON="$PWD/_build/ex_ssl-quic-py/bin/python" mix run apps/ex_ssl/e2e/quic_tls/run.exs
+
+      - name: Build pinned Caddy fingerprint fixture
+        if: matrix.app == 'ex_ssl'
+        run: docker build --tag ex-ssl-e2e:local apps/ex_ssl/e2e
+
+      - name: Start Caddy fingerprint fixture
+        if: matrix.app == 'ex_ssl'
+        run: |
+          docker run -d --name ex-ssl-e2e --publish 127.0.0.1:8443:8443 ex-ssl-e2e:local
+          ready=false
+          for _ in {1..30}; do
+            if nc -z 127.0.0.1 8443; then ready=true; break; fi
+            sleep 1
+          done
+          if [[ "$ready" != true ]]; then docker logs ex-ssl-e2e; exit 1; fi
+
+      - name: Verify Caddy JA3 and JA4 observations
+        if: matrix.app == 'ex_ssl'
+        working-directory: apps/ex_ssl/e2e
+        env:
+          MIX_BUILD_PATH: ${{ github.workspace }}/_build/ex_ssl-e2e-harness
+        run: |
+          mix deps.get
+          mix compile --warnings-as-errors
+          mix test
+
+      - name: Stop Caddy fingerprint fixture
+        if: always() && matrix.app == 'ex_ssl'
+        run: |
+          docker logs ex-ssl-e2e || true
+          docker rm -f ex-ssl-e2e || true
+
+      - name: Verify QUIC client, server and stream interop
+        if: matrix.app == 'elixir_quic'
         run: |
           mkdir -p _build/interop
           mix run scripts/interop/run.exs client _build/interop/client
@@ -61,16 +151,22 @@ jobs:
           mix run scripts/interop/stream_interop.exs
           uv run --python 3.12 --with aioquic==1.2.0 python scripts/interop/test_peer.py
 
-      - name: Verify Phase 1 reliable streams
+      - name: Verify reliable streams under impairment
+        if: matrix.app == 'elixir_quic'
         env:
-          PHASE1_INTEROP_RUN: "1"
+          PHASE1_INTEROP_RUN: '1'
           PHASE1_SCENARIO: impaired
         run: |
           mix run scripts/phase1/interop.exs client
           mix run scripts/phase1/interop.exs server
           PHASE1_EXTERNAL=1 mix run scripts/phase1/interop.exs server
 
-      - name: Verify HTTP/3 ALPN and QUIC DATAGRAM with aioquic
+      - name: Verify QUIC DATAGRAM with aioquic
+        if: matrix.app == 'elixir_quic'
         run: |
           mix run scripts/datagram/interop.exs client
           mix run scripts/datagram/interop.exs server
+
+      - name: Verify HTTP/3 adapter over local UDP
+        if: matrix.app == 'elixir_quic_http3'
+        run: mix run apps/elixir_quic_http3/e2e/transport_smoke.exs

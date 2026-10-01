@@ -12,17 +12,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    uses: ./.github/workflows/changes.yml
+    with:
+      workflow_file: ci.yml
+
   checks:
-    name: Static checks & build
+    name: Static checks & build (${{ matrix.app }})
+    needs: changes
+    if: needs.changes.outputs.has_changes == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        app: ${{ fromJSON(needs.changes.outputs.apps) }}
     runs-on: ubuntu-latest
     env:
       MIX_ENV: test
+      EX_QUIC_CI_APP: ${{ matrix.app }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup BEAM
-        uses: erlef/setup-beam@v1
+      - uses: erlef/setup-beam@v1
         with:
           elixir-version: '1.20.1'
           otp-version: '29.0'
@@ -33,9 +43,7 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-otp29.0-elixir1.20.1-mix-${{ hashFiles('**/mix.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-otp29.0-elixir1.20.1-mix-
+          key: ci-${{ matrix.app }}-${{ runner.os }}-otp29.0-elixir1.20.1-${{ hashFiles('mix.lock', 'mix.exs', format('apps/{0}/mix.exs', matrix.app)) }}
 
       - name: Install dependencies
         run: |
@@ -43,17 +51,32 @@ jobs:
           mix local.rebar --force
           mix deps.get
 
-      - name: Check formatting
+      - name: Check root formatting
+        run: mix format --check-formatted mix.exs .formatter.exs config/config.exs
+
+      - name: Check app formatting
+        working-directory: apps/${{ matrix.app }}
         run: mix format --check-formatted
 
-      - name: Compile
+      - name: Check TLS E2E harness formatting
+        if: matrix.app == 'ex_ssl'
+        working-directory: apps/ex_ssl/e2e
+        run: mix format --check-formatted
+
+      - name: Check release QUIC interop script formatting
+        if: matrix.app == 'elixir_quic'
+        run: mix format --check-formatted scripts/phase1/interop.exs scripts/phase1/release_check.exs scripts/datagram/interop.exs
+
+      - name: Check HTTP/3 transport smoke formatting
+        if: matrix.app == 'elixir_quic_http3'
+        run: mix format --check-formatted apps/elixir_quic_http3/e2e/transport_smoke.exs
+
+      - name: Compile selected app and dependencies
         run: mix compile --warnings-as-errors
 
-      - name: Build Hex package
-        run: |
-          mkdir -p _build
-          cd apps/elixir_quic
-          mix hex.build --output ../../_build/elixir_quic.tar
+      - name: Build selected Hex package
+        working-directory: apps/${{ matrix.app }}
+        run: mix hex.build --output ../../_build/${{ matrix.app }}.tar
 
       - name: Check git diff
         run: git diff --check

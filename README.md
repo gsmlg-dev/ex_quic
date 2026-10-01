@@ -39,6 +39,10 @@ From the repository root, `mix deps.get`, `mix format --check-formatted`, `mix c
 
 For local development, the root Mix project sets explicit path and environment overrides for `ex_ssl` and `elixir_quic` to resolve the dependencies used by `http_core`. Mix currently reports duplicate top-level dependency warnings for those apps; these have appeared even when `mix compile --warnings-as-errors` exits successfully.
 
+The CI, Test, and E2E workflows select jobs from directly changed app paths. Root QUIC interop scripts select `elixir_quic`; shared Mix/configuration and workflow selection files select all apps. Changes to unrelated documentation skip the expensive jobs. Each app runs in its own job and executes only its own checks or tests; Mix still compiles the selected app's dependencies. To reproduce a CI test locally, set `EX_QUIC_CI_APP` to `ex_ssl`, `elixir_quic`, or `elixir_quic_http3` and run `mix test apps/$EX_QUIC_CI_APP/test` from the root. Without this variable, the root Mix project keeps its normal full-umbrella behavior.
+
+E2E runs automatically for affected apps on `main` pushes and pull requests. Manual E2E dispatch accepts one app or all apps, with an optional release version. Older single-app QUIC tags can run the QUIC checks; SSL and HTTP/3 require tags containing the modular app sources and workflow support. The SSL job checks its independent QUIC-TLS reference and CI-hosted Caddy fingerprint fixture, the QUIC job runs the existing network interop scripts, and the HTTP/3 job checks its transport adapter over local UDP. The HTTP/3 smoke check does not establish full external HTTP/3 interoperability.
+
 To build the `elixir_quic` Hex archive without publishing, run:
 
 ```sh
